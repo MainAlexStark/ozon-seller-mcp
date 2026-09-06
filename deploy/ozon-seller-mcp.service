@@ -1,0 +1,51 @@
+# systemd-юнит для сетевого режима.
+#
+#   sudo cp deploy/ozon-seller-mcp.service /etc/systemd/system/
+#   sudo cp deploy/ozon-seller-mcp.env /etc/ozon-seller-mcp.env
+#   sudo chmod 600 /etc/ozon-seller-mcp.env      # там ключ Ozon и токены
+#   sudo useradd --system --no-create-home --shell /usr/sbin/nologin ozonmcp
+#   sudo systemctl enable --now ozon-seller-mcp
+
+[Unit]
+Description=MCP-сервер Ozon Seller API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ozonmcp
+Group=ozonmcp
+
+# Секреты — в файле с правами 600, а не в командной строке:
+# аргументы процесса видны любому пользователю через ps.
+EnvironmentFile=/etc/ozon-seller-mcp.env
+
+ExecStart=/usr/local/bin/ozon-seller-mcp --http 127.0.0.1:8571
+
+Restart=always
+RestartSec=5s
+
+# Слушаем только петлю: наружу выпускает обратный прокси, который
+# занимается TLS. Порт 8571 не должен быть виден из интернета напрямую.
+
+# Ограничения прав: сервису нужен только исходящий HTTPS к Ozon.
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

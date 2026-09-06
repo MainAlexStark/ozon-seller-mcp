@@ -1,0 +1,27 @@
+# Caddy сам выпускает и продлевает сертификат Let's Encrypt.
+#
+#   sudo cp deploy/Caddyfile /etc/caddy/Caddyfile
+#   sudo systemctl reload caddy
+
+ozon-mcp.example.com {
+	# Токен приходит в адресе, поэтому пути НЕ логируем: иначе секрет
+	# осядет в журнале сервера, а это ровно то, чего мы избегали.
+	log {
+		output file /var/log/caddy/ozon-mcp.log
+		format filter {
+			request>uri query {
+				replace REDACTED
+			}
+			request>uri path {
+				replace REDACTED
+			}
+		}
+	}
+
+	reverse_proxy 127.0.0.1:8571 {
+		# ozon_import_status с wait=true ждёт до 5 минут.
+		transport http {
+			response_header_timeout 6m
+		}
+	}
+}

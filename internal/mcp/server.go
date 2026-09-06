@@ -123,6 +123,31 @@ func (s *Server) Serve(ctx context.Context, in io.Reader, out io.Writer) error {
 	return sc.Err()
 }
 
+// HandleMessage обрабатывает одно JSON-RPC сообщение и возвращает
+// закодированный ответ.
+//
+// Вынесено в публичный метод, чтобы транспорты (stdio и HTTP) делили
+// одну реализацию протокола: расхождение между ними — это разное
+// поведение сервера в зависимости от способа подключения, а такое
+// не отлаживается.
+//
+// Для уведомления (сообщения без id) возвращается nil без ошибки:
+// отвечать не на что.
+func (s *Server) HandleMessage(ctx context.Context, message []byte) ([]byte, error) {
+	var req request
+	if err := json.Unmarshal(message, &req); err != nil {
+		return json.Marshal(response{
+			JSONRPC: "2.0",
+			Error:   &rpcErr{Code: -32700, Message: "parse error"},
+		})
+	}
+
+	if len(req.ID) == 0 {
+		return nil, nil
+	}
+	return json.Marshal(s.handle(ctx, req))
+}
+
 func (s *Server) handle(ctx context.Context, req request) response {
 	out := response{JSONRPC: "2.0"}
 	if len(req.ID) > 0 {

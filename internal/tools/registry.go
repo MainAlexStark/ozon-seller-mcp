@@ -59,8 +59,9 @@ func (r *Registry) Add(s Spec) {
 				}
 			}
 
+			safety := r.safetyFor(ctx)
 			if s.Write {
-				if err := r.safety.CheckWrite(s.Name); err != nil {
+				if err := safety.CheckWrite(s.Name); err != nil {
 					return "", err
 				}
 			}
@@ -94,18 +95,18 @@ func (r *Registry) call(ctx context.Context, path string, payload any) (string, 
 	if err != nil {
 		return "", decorate(err)
 	}
-	return r.format(raw), nil
+	return r.format(ctx, raw), nil
 }
 
-// format красиво печатает JSON и обрезает по лимиту.
-func (r *Registry) format(raw json.RawMessage) string {
+// format красиво печатает JSON и обрезает по лимиту запроса.
+func (r *Registry) format(ctx context.Context, raw json.RawMessage) string {
 	var pretty json.RawMessage
 	if out, err := json.MarshalIndent(json.RawMessage(raw), "", "  "); err == nil {
 		pretty = out
 	} else {
 		pretty = raw
 	}
-	return r.safety.TrimResponse(string(pretty))
+	return r.safetyFor(ctx).TrimResponse(string(pretty))
 }
 
 // decorate добавляет к ошибке Ozon человеческую подсказку.

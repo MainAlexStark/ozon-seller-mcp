@@ -216,7 +216,7 @@ func (r *Registry) RegisterCatalog() {
 			if summary := summarizeImport(items); summary != "" {
 				body = summary + "\n\n" + body
 			}
-			return r.safety.TrimResponse(body), nil
+			return r.safetyFor(ctx).TrimResponse(body), nil
 		},
 	})
 }

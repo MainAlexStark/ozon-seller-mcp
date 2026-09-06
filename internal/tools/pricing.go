@@ -83,10 +83,11 @@ func (r *Registry) RegisterPricing() {
 				return "", fmt.Errorf("не разобрать аргументы: %w", err)
 			}
 
-			if err := r.safety.CheckWrite("ozon_prices_update"); err != nil {
+			safety := r.safetyFor(ctx)
+			if err := safety.CheckWrite("ozon_prices_update"); err != nil {
 				return "", err
 			}
-			if err := r.safety.CheckBatchSize(len(a.Prices)); err != nil {
+			if err := safety.CheckBatchSize(len(a.Prices)); err != nil {
 				return "", err
 			}
 			if len(a.Prices) == 0 {
@@ -105,7 +106,7 @@ func (r *Registry) RegisterPricing() {
 			if err != nil {
 				return "", err
 			}
-			if err := r.safety.CheckPriceChanges(changes, a.Confirm); err != nil {
+			if err := safety.CheckPriceChanges(changes, a.Confirm); err != nil {
 				return "", err
 			}
 
@@ -114,7 +115,7 @@ func (r *Registry) RegisterPricing() {
 				return "", decorate(err)
 			}
 
-			body := r.format(resp)
+			body := r.format(ctx, resp)
 			if warn != "" {
 				body = warn + "\n\n" + body
 			}
@@ -144,10 +145,11 @@ func (r *Registry) RegisterPricing() {
 				return "", fmt.Errorf("не разобрать аргументы: %w", err)
 			}
 
-			if err := r.safety.CheckWrite("ozon_stocks_update"); err != nil {
+			safety := r.safetyFor(ctx)
+			if err := safety.CheckWrite("ozon_stocks_update"); err != nil {
 				return "", err
 			}
-			if err := r.safety.CheckBatchSize(len(a.Stocks)); err != nil {
+			if err := safety.CheckBatchSize(len(a.Stocks)); err != nil {
 				return "", err
 			}
 
@@ -155,7 +157,7 @@ func (r *Registry) RegisterPricing() {
 			if err != nil {
 				return "", decorate(err)
 			}
-			return r.format(resp), nil
+			return r.format(ctx, resp), nil
 		},
 	})
 }

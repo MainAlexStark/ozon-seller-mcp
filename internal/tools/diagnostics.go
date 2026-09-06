@@ -46,17 +46,23 @@ func (r *Registry) RegisterDiagnostics() {
 		Description: "Состояние сервера: режим (только чтение или запись), пороги защиты, кабинет продавца. " +
 			"Вызовите первым, если непонятно, почему инструмент отказывается что-то менять.",
 		InputSchema: schema(obj{}),
-		Handler: func(_ context.Context, _ json.RawMessage) (string, error) {
+		Handler: func(ctx context.Context, _ json.RawMessage) (string, error) {
+			safety := r.safetyFor(ctx)
+
 			var b strings.Builder
 
-			fmt.Fprintf(&b, "Режим:                 %s\n", r.safety.Mode)
-			if r.safety.Mode == ModeReadOnly {
-				b.WriteString("                       (запись запрещена; включается OZON_ALLOW_WRITES=true)\n")
+			fmt.Fprintf(&b, "Режим этого подключения: %s\n", safety.Mode)
+			if safety.Mode == ModeReadOnly {
+				// Формулировка зависит от транспорта: по stdio режим
+				// задаётся переменной окружения, по HTTP — тем, какой
+				// токен вы прописали в этом клиенте.
+				b.WriteString("                         (запись запрещена: локально — OZON_ALLOW_WRITES,\n")
+				b.WriteString("                          по сети — использован токен только на чтение)\n")
 			}
-			fmt.Fprintf(&b, "Client-Id:             %s\n", maskID(r.client.ClientID()))
-			fmt.Fprintf(&b, "Порог смены цены:      %.0f%%\n", r.safety.MaxPriceDeltaPct)
-			fmt.Fprintf(&b, "Позиций за одну запись: %d\n", r.safety.MaxItemsPerWrite)
-			fmt.Fprintf(&b, "Потолок ответа:        %d байт\n", r.safety.MaxResponseBytes)
+			fmt.Fprintf(&b, "Client-Id:               %s\n", maskID(r.client.ClientID()))
+			fmt.Fprintf(&b, "Порог смены цены:        %.0f%%\n", safety.MaxPriceDeltaPct)
+			fmt.Fprintf(&b, "Позиций за одну запись:  %d\n", safety.MaxItemsPerWrite)
+			fmt.Fprintf(&b, "Потолок ответа:          %d байт\n", safety.MaxResponseBytes)
 			fmt.Fprintf(&b, "\nИнструментов зарегистрировано: %d\n", len(r.server.ToolNames()))
 			b.WriteString("\nПроверить, что ключи приняты и методы живы: ozon_api_selftest.")
 
