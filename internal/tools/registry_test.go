@@ -315,3 +315,99 @@ func TestMaskID(t *testing.T) {
 		}
 	}
 }
+
+// Ozon требует filter даже когда фильтровать нечего. Раньше этого теста
+// не было, и --check падал с 400 ещё до проверки ключей.
+func TestRequiredFilterIsSentEvenWhenNotAsked(t *testing.T) {
+	type sent struct {
+		Filter map[string]any `json:"filter"`
+		Limit  int            `json:"limit"`
+	}
+	var got map[string]sent // путь -> тело
+
+	got = map[string]sent{}
+	_, server, closeFn := fakeOzon(t, ModeReadOnly, func(w http.ResponseWriter, r *http.Request) {
+		var body sent
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		got[r.URL.Path] = body
+		_, _ = w.Write([]byte(`{"result":{}}`))
+	})
+	defer closeFn()
+
+	cases := []struct {
+		tool string
+		path string
+	}{
+		{"ozon_product_list", ozon.PathProductList},
+		{"ozon_product_attributes", ozon.PathProductAttributes},
+		{"ozon_prices_info", ozon.PathPricesInfo},
+		{"ozon_stocks_info", ozon.PathStocksInfo},
+	}
+
+	for _, c := range cases {
+		// Вызываем совсем без аргументов — так, как это сделает модель,
+		// когда её просто спросили «покажи мои товары».
+		if _, isErr := callTool(t, server, c.tool, map[string]any{}); isErr {
+			t.Errorf("%s: вызов без аргументов не должен падать", c.tool)
+			continue
+		}
+		body, ok := got[c.path]
+		if !ok {
+			t.Errorf("%s: запрос не дошёл до %s", c.tool, c.path)
+			continue
+		}
+		if body.Filter == nil {
+			t.Errorf("%s: filter не отправлен — Ozon ответит 400", c.tool)
+			continue
+		}
+		if body.Filter["visibility"] != "ALL" {
+			t.Errorf("%s: visibility = %v, want ALL", c.tool, body.Filter["visibility"])
+		}
+		if body.Limit == 0 {
+			t.Errorf("%s: лимит не проставлен", c.tool)
+		}
+	}
+}
+
+func TestExplicitFilterNotOverwritten(t *testing.T) {
+	var gotVisibility any
+
+	_, server, closeFn := fakeOzon(t, ModeReadOnly, func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Filter map[string]any `json:"filter"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		gotVisibility = body.Filter["visibility"]
+		_, _ = w.Write([]byte(`{"result":{}}`))
+	})
+	defer closeFn()
+
+	callTool(t, server, "ozon_product_list", map[string]any{
+		"filter": map[string]any{"visibility": "EMPTY_STOCK"},
+	})
+
+	if gotVisibility != "EMPTY_STOCK" {
+		t.Errorf("явно заданный visibility перезаписан на %v", gotVisibility)
+	}
+}
+
+func TestRequestValidationErrorGetsRightHint(t *testing.T) {
+	_, server, closeFn := fakeOzon(t, ModeReadOnly, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"code":"BAD_REQUEST","message":"Request validation error: invalid GetProductListRequest.Filter: value is required"}`))
+	})
+	defer closeFn()
+
+	body, isErr := callTool(t, server, "ozon_product_list", map[string]any{})
+	if !isErr {
+		t.Fatal("400 должен быть ошибкой")
+	}
+	// Раньше здесь советовали смотреть характеристики категории —
+	// к форме запроса это отношения не имеет и уводило в сторону.
+	if strings.Contains(body, "характеристика категории") {
+		t.Errorf("ошибка формы запроса не должна советовать смотреть характеристики: %s", body)
+	}
+	if !strings.Contains(body, "filter") {
+		t.Errorf("подсказка должна называть filter: %s", body)
+	}
+}

@@ -71,10 +71,7 @@ func (r *Registry) RegisterCatalog() {
 			"limit":   obj{"type": "integer", "default": 100, "maximum": 1000},
 		}),
 		Build: func(a map[string]any) (any, error) {
-			if _, ok := a["limit"]; !ok {
-				a["limit"] = 100
-			}
-			return a, nil
+			return withLimit(withFilter(a), 100), nil
 		},
 	})
 
@@ -105,10 +102,7 @@ func (r *Registry) RegisterCatalog() {
 			"last_id": str("Курсор постраничного обхода"),
 		}),
 		Build: func(a map[string]any) (any, error) {
-			if _, ok := a["limit"]; !ok {
-				a["limit"] = 100
-			}
-			return a, nil
+			return withLimit(withFilter(a), 100), nil
 		},
 	})
 

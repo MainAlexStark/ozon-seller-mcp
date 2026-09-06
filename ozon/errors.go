@@ -56,13 +56,34 @@ func (e *APIError) Hint() string {
 	case http.StatusTooManyRequests:
 		return "Превышен лимит запросов. Клиент уже делает повторы с паузой; если повторяется — снизьте частоту."
 	case http.StatusBadRequest:
-		return "Ozon отверг тело запроса. Чаще всего это незаполненная обязательная характеристика категории: " +
-			"посмотрите ozon_category_attributes для нужной категории."
+		// У 400 два принципиально разных источника, и путать их дорого:
+		// либо неверно собрано тело запроса, либо не заполнено то, что
+		// требует категория. Ozon сам говорит, какой это случай, —
+		// подсказку выбираем по его формулировке, а не гадаем.
+		if isRequestValidation(e.Message) {
+			return "Ozon отверг форму запроса: не хватает обязательного поля или оно не того типа. " +
+				"Точное имя поля названо в сообщении выше — обычно это filter, который у большинства " +
+				"методов обязателен даже когда фильтровать нечего (передайте {\"visibility\": \"ALL\"})."
+		}
+		return "Ozon отверг содержимое. Чаще всего это незаполненная обязательная характеристика категории: " +
+			"посмотрите ozon_category_attributes для нужной категории и типа товара."
 	}
 	if e.StatusCode >= 500 {
 		return "Ошибка на стороне Ozon. Клиент повторил запрос несколько раз — стоит попробовать позже."
 	}
 	return ""
+}
+
+// isRequestValidation отличает «тело собрано неправильно» от
+// «данные не прошли проверку по существу».
+func isRequestValidation(msg string) bool {
+	m := strings.ToLower(msg)
+	for _, marker := range []string{"validation error", "value is required", "invalid ", "cannot unmarshal"} {
+		if strings.Contains(m, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // asAPIError — обёртка над errors.As для читаемости в client.go.

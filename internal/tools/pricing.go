@@ -28,10 +28,7 @@ func (r *Registry) RegisterPricing() {
 			"cursor": str("Курсор постраничного обхода"),
 		}),
 		Build: func(a map[string]any) (any, error) {
-			if _, ok := a["limit"]; !ok {
-				a["limit"] = 100
-			}
-			return a, nil
+			return withLimit(withFilter(a), 100), nil
 		},
 	})
 
@@ -49,10 +46,7 @@ func (r *Registry) RegisterPricing() {
 			"cursor": str("Курсор постраничного обхода"),
 		}),
 		Build: func(a map[string]any) (any, error) {
-			if _, ok := a["limit"]; !ok {
-				a["limit"] = 100
-			}
-			return a, nil
+			return withLimit(withFilter(a), 100), nil
 		},
 	})
 

@@ -99,7 +99,13 @@ func runCheck(client *ozon.Client, srv *mcp.Server, safety tools.Safety) {
 	defer cancel()
 
 	fmt.Print("Проверяю ключи… ")
-	_, err := client.Call(ctx, ozon.PathProductList, map[string]any{"limit": 1})
+	// filter обязателен даже когда фильтровать нечего: без него Ozon
+	// отвечает 400 ещё до проверки ключа, и понять, приняты ли ключи,
+	// становится невозможно.
+	_, err := client.Call(ctx, ozon.PathProductList, map[string]any{
+		"filter": map[string]any{"visibility": "ALL"},
+		"limit":  1,
+	})
 	if err != nil {
 		fmt.Println("не прошло")
 		var apiErr *ozon.APIError

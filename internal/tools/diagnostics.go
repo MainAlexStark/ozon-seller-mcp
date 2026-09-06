@@ -22,7 +22,8 @@ type probe struct {
 // probes — методы для самодиагностики. Все только читают.
 func probes() []probe {
 	return []probe{
-		{"ozon_product_list", ozon.PathProductList, obj{"limit": 1}},
+		// filter обязателен даже когда фильтровать нечего — см. defaults.go.
+		{"ozon_product_list", ozon.PathProductList, obj{"filter": obj{"visibility": "ALL"}, "limit": 1}},
 		{"ozon_prices_info", ozon.PathPricesInfo, obj{"filter": obj{"visibility": "ALL"}, "limit": 1}},
 		{"ozon_stocks_info", ozon.PathStocksInfo, obj{"filter": obj{"visibility": "ALL"}, "limit": 1}},
 		{"ozon_warehouse_list", ozon.PathWarehouseList, obj{}},
