@@ -14,8 +14,12 @@
 //	OZON_API_KEY             обязательно
 //	OZON_ALLOW_WRITES        stdio: true разрешает изменение данных
 //	OZON_HTTP_ADDR           сетевой режим: адрес прослушивания
-//	OZON_TOKEN_READ          сетевой режим: токен только на чтение
-//	OZON_TOKEN_WRITE         сетевой режим: токен на чтение и запись
+//	OZON_PUBLIC_URL          сетевой режим: внешний адрес, включает OAuth
+//	OZON_OWNER_PASSWORD_HASH сетевой режим: хеш пароля владельца (--hash-password)
+//	OZON_OAUTH_STORE         сетевой режим: файл хранилища OAuth
+//	OZON_RESOURCE_URL        сетевой режим: адрес MCP, если отличается от <public>/mcp
+//	OZON_TOKEN_READ          статический токен на чтение (автоматизация)
+//	OZON_TOKEN_WRITE         статический токен на чтение и запись (автоматизация)
 //	OZON_ALLOWED_ORIGINS     сетевой режим: разрешённые Origin через запятую
 //	OZON_MAX_PRICE_DELTA     порог смены цены в процентах (30)
 //	OZON_MAX_ITEMS_PER_WRITE позиций за один вызов записи (100)
@@ -37,6 +41,7 @@ import (
 
 	"github.com/MainAlexStark/ozon-seller-mcp/internal/httpx"
 	"github.com/MainAlexStark/ozon-seller-mcp/internal/mcp"
+	"github.com/MainAlexStark/ozon-seller-mcp/internal/oauth"
 	"github.com/MainAlexStark/ozon-seller-mcp/internal/tools"
 	"github.com/MainAlexStark/ozon-seller-mcp/ozon"
 )
@@ -46,10 +51,13 @@ var version = "dev"
 
 func main() {
 	var (
-		httpAddr    = flag.String("http", "", "поднять сетевой сервер на указанном адресе, например :8571")
-		check       = flag.Bool("check", false, "проверить ключи и выйти")
-		genToken    = flag.Bool("gen-token", false, "сгенерировать токен доступа и выйти")
-		showVersion = flag.Bool("version", false, "показать версию")
+		httpAddr     = flag.String("http", "", "поднять сетевой сервер на указанном адресе, например :8571")
+		check        = flag.Bool("check", false, "проверить ключи и выйти")
+		genToken     = flag.Bool("gen-token", false, "сгенерировать статический токен (для автоматизации)")
+		hashPassFlag = flag.Bool("hash-password", false, "посчитать хеш пароля владельца для OAuth")
+		grants       = flag.Bool("grants", false, "показать действующие подключения")
+		revoke       = flag.String("revoke", "", "отозвать подключение по началу идентификатора выдачи")
+		showVersion  = flag.Bool("version", false, "показать версию")
 	)
 	flag.Parse()
 
@@ -57,8 +65,17 @@ func main() {
 	case *showVersion:
 		fmt.Println("ozon-seller-mcp", version)
 		return
+	case *hashPassFlag:
+		hashPassword()
+		return
 	case *genToken:
 		printNewToken()
+		return
+	case *grants:
+		listGrants()
+		return
+	case *revoke != "":
+		revokeGrant(*revoke)
 		return
 	}
 
@@ -136,12 +153,39 @@ func runStdio(ctx context.Context, srv *mcp.Server, safety tools.Safety) {
 
 // runHTTP — сетевой режим: сервер доступен всем устройствам.
 func runHTTP(ctx context.Context, srv *mcp.Server, safety tools.Safety, addr string) {
-	auth, err := httpx.NewAuth(os.Getenv("OZON_TOKEN_READ"), os.Getenv("OZON_TOKEN_WRITE"))
-	if err != nil {
-		fatal(err.Error())
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+	auth := httpx.Auth{
+		Static: httpx.NewStaticAuth(os.Getenv("OZON_TOKEN_READ"), os.Getenv("OZON_TOKEN_WRITE")),
 	}
 
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	// OAuth включается, как только задан внешний адрес: без него нельзя
+	// построить ни метаданные, ни адреса эндпоинтов.
+	if publicURL := os.Getenv("OZON_PUBLIC_URL"); publicURL != "" {
+		store, err := oauth.NewStore(env("OZON_OAUTH_STORE", "/var/lib/ozon-seller-mcp/oauth.json"))
+		if err != nil {
+			fatal("хранилище OAuth: " + err.Error())
+		}
+		if err := store.Cleanup(); err != nil {
+			logger.Warn("не удалось почистить хранилище", "err", err)
+		}
+
+		oauthSrv, err := oauth.New(oauth.Config{
+			Issuer:       publicURL,
+			ResourceURL:  os.Getenv("OZON_RESOURCE_URL"),
+			PasswordHash: os.Getenv("OZON_OWNER_PASSWORD_HASH"),
+			Store:        store,
+			Logger:       logger,
+		})
+		if err != nil {
+			fatal(err.Error())
+		}
+		auth.OAuth = oauthSrv
+
+		logger.Info("OAuth включён",
+			"issuer", oauthSrv.Issuer(),
+			"resource", oauthSrv.ResourceURL())
+	}
 
 	var origins []string
 	if v := os.Getenv("OZON_ALLOWED_ORIGINS"); v != "" {
@@ -152,21 +196,25 @@ func runHTTP(ctx context.Context, srv *mcp.Server, safety tools.Safety, addr str
 		}
 	}
 
-	http := httpx.NewServer(srv, auth, httpx.Config{
+	http, err := httpx.NewServer(srv, auth, httpx.Config{
 		Addr:           addr,
 		AllowedOrigins: origins,
 		Safety:         safety,
 		Logger:         logger,
 	})
+	if err != nil {
+		fatal(err.Error())
+	}
 
 	logger.Info("сетевой сервер запущен",
 		"addr", addr,
 		"tools", len(srv.ToolNames()),
-		"read_token", os.Getenv("OZON_TOKEN_READ") != "",
-		"write_token", os.Getenv("OZON_TOKEN_WRITE") != "")
+		"oauth", auth.OAuth != nil,
+		"static_tokens", auth.Static.Enabled())
 
-	if os.Getenv("OZON_TOKEN_WRITE") == "" {
-		logger.Info("пишущий токен не задан: через сеть магазин изменить нельзя")
+	if auth.Static.Enabled() {
+		logger.Warn("включены статические токены: они не истекают и не отзываются поштучно — " +
+			"держите их только для автоматизации")
 	}
 
 	if err := http.ListenAndServe(ctx); err != nil {
@@ -181,8 +229,10 @@ func printNewToken() {
 	}
 	fmt.Println(token)
 	fmt.Fprintln(os.Stderr,
-		"\nЗадайте его как OZON_TOKEN_READ (только чтение) или OZON_TOKEN_WRITE (чтение и запись).\n"+
-			"Генерируйте разные токены: тогда телефон с читающим токеном физически не сможет менять цены.")
+		"\nЭто СТАТИЧЕСКИЙ токен: он не истекает и отзывается только сменой значения.\n"+
+			"Он нужен автоматизации, которая не может пройти экран согласия.\n"+
+			"Для себя и своих устройств используйте OAuth — см. docs/OAUTH.md.\n\n"+
+			"Задайте как OZON_TOKEN_READ (чтение) или OZON_TOKEN_WRITE (чтение и запись).")
 }
 
 // runCheck проверяет ключи до того, как сервер пропишут в Claude.
@@ -244,6 +294,13 @@ func runCheck(client *ozon.Client, srv *mcp.Server, safety tools.Safety) {
 func fatal(msg string) {
 	fmt.Fprintln(os.Stderr, "ozon-seller-mcp:", msg)
 	os.Exit(1)
+}
+
+func env(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
 }
 
 func envBool(key string) bool {

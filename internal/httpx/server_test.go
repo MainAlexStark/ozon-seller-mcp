@@ -32,12 +32,12 @@ func testServer(t *testing.T, ozonHandler http.HandlerFunc) (*httptest.Server, f
 	reg.RegisterAnalytics()
 	reg.RegisterDiagnostics()
 
-	auth, err := NewAuth(readToken, writeToken)
+	auth := Auth{Static: NewStaticAuth(readToken, writeToken)}
+
+	s, err := NewServer(m, auth, Config{Safety: tools.DefaultSafety()})
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	s := NewServer(m, auth, Config{Safety: tools.DefaultSafety()})
 	front := httptest.NewServer(s.Handler())
 
 	return front, func() {
@@ -127,18 +127,16 @@ func TestWrongTokenRejected(t *testing.T) {
 	}
 }
 
-func TestTokenInPathWorks(t *testing.T) {
-	// Так подключается мобильное приложение: в интерфейсе есть только
-	// поле адреса, задать заголовок негде.
+func TestTokenInPathRejected(t *testing.T) {
+	// Раньше так подключался телефон. Спецификация MCP это запрещает:
+	// адрес с токеном оседает в журналах прокси и истории браузера.
+	// Теперь для телефона есть OAuth, а этот путь закрыт.
 	front, closeFn := testServer(t, func(w http.ResponseWriter, r *http.Request) {})
 	defer closeFn()
 
-	resp, body := rpc(t, front.URL, "/mcp/"+readToken, "", "tools/list", nil)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("токен в адресе должен работать, получен %d: %s", resp.StatusCode, body)
-	}
-	if !strings.Contains(body, "ozon_product_list") {
-		t.Errorf("список инструментов не пришёл: %s", body)
+	resp, _ := rpc(t, front.URL, "/mcp/"+readToken, "", "tools/list", nil)
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("токен в адресе больше не должен приниматься, получен %d", resp.StatusCode)
 	}
 }
 

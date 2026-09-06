@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/MainAlexStark/ozon-seller-mcp/internal/mcp"
+	"github.com/MainAlexStark/ozon-seller-mcp/internal/oauth"
 	"github.com/MainAlexStark/ozon-seller-mcp/internal/tools"
 )
 
@@ -31,6 +32,16 @@ type Config struct {
 	Logger *slog.Logger
 }
 
+// Auth — способ проверки входящих запросов.
+//
+// Способов два, и они не равноценны. OAuth — основной: короткие токены,
+// поштучный отзыв, согласие на конкретные права. Статические токены
+// оставлены для автоматизации, которая не может пройти экран согласия.
+type Auth struct {
+	OAuth  *oauth.Server
+	Static *StaticAuth
+}
+
 // Server — MCP поверх Streamable HTTP.
 //
 // Сервер намеренно сделан без состояния: не выдаёт Mcp-Session-Id и не
@@ -38,24 +49,35 @@ type Config struct {
 // перезапуск процесса и не ломается за балансировщиком.
 type Server struct {
 	mcp    *mcp.Server
-	auth   *Auth
+	auth   Auth
 	cfg    Config
 	logger *slog.Logger
 }
 
 // NewServer собирает сетевой транспорт.
-func NewServer(m *mcp.Server, auth *Auth, cfg Config) *Server {
+func NewServer(m *mcp.Server, auth Auth, cfg Config) (*Server, error) {
+	if auth.OAuth == nil && !auth.Static.Enabled() {
+		return nil, ErrNoAuth
+	}
 	logger := cfg.Logger
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Server{mcp: m, auth: auth, cfg: cfg, logger: logger}
+	return &Server{mcp: m, auth: auth, cfg: cfg, logger: logger}, nil
 }
 
 // Handler возвращает HTTP-обработчик.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.health)
+
+	// Эндпоинты авторизации регистрируются до общего обработчика,
+	// иначе они попали бы под проверку токена — которого у клиента
+	// на этом этапе ещё нет.
+	if s.auth.OAuth != nil {
+		s.auth.OAuth.Mount(mux)
+	}
+
 	mux.HandleFunc("/", s.mcpEndpoint)
 	return mux
 }
@@ -100,14 +122,9 @@ func (s *Server) mcpEndpoint(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token, _ := TokenFromRequest(r)
-	scope, ok := s.auth.Scope(token)
+	scope, ok := s.authorize(w, r)
 	if !ok {
-		// Ни адрес, ни тело не логируются: в адресе может быть токен.
-		s.logger.Warn("отказ в доступе", "remote", clientIP(r), "method", r.Method)
-		w.Header().Set("WWW-Authenticate", `Bearer realm="ozon-seller-mcp"`)
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
-		return
+		return // ответ уже отправлен
 	}
 
 	switch r.Method {
@@ -175,6 +192,50 @@ func (s *Server) handlePost(w http.ResponseWriter, r *http.Request, scope Scope)
 
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write(resp)
+}
+
+// authorize определяет права запроса.
+//
+// Порядок важен: сначала OAuth, потом статический токен. Токен OAuth
+// и статический токен внешне неразличимы — оба приходят как Bearer, —
+// поэтому решает не форма, а то, знает ли о нём сервер авторизации.
+//
+// При отказе ответ обязан быть 401 с заголовком WWW-Authenticate,
+// указывающим на метаданные ресурса: именно по нему клиент понимает,
+// куда идти за токеном. Без этого заголовка Claude просто не узнает,
+// что сервер вообще поддерживает OAuth, и подключение молча не
+// состоится.
+func (s *Server) authorize(w http.ResponseWriter, r *http.Request) (Scope, bool) {
+	token := bearerToken(r)
+
+	if s.auth.OAuth != nil {
+		if t, err := s.auth.OAuth.Validate(token); err == nil {
+			if t.HasScope(oauth.ScopeWrite) {
+				return ScopeWrite, true
+			}
+			return ScopeRead, true
+		}
+	}
+
+	if scope, ok := s.auth.Static.Scope(token); ok {
+		return scope, true
+	}
+
+	// Тело и адрес не логируем: в них могут быть чувствительные данные.
+	s.logger.Warn("отказ в доступе", "remote", clientIP(r), "method", r.Method)
+
+	if s.auth.OAuth != nil {
+		desc := "требуется авторизация"
+		if token != "" {
+			desc = "токен недействителен или истёк"
+		}
+		s.auth.OAuth.WriteUnauthorized(w, desc)
+		return "", false
+	}
+
+	w.Header().Set("WWW-Authenticate", `Bearer realm="ozon-seller-mcp"`)
+	http.Error(w, "unauthorized", http.StatusUnauthorized)
+	return "", false
 }
 
 func (s *Server) originAllowed(origin string) bool {

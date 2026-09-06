@@ -4,6 +4,7 @@
 #   sudo cp deploy/ozon-seller-mcp.env /etc/ozon-seller-mcp.env
 #   sudo chmod 600 /etc/ozon-seller-mcp.env      # там ключ Ozon и токены
 #   sudo useradd --system --no-create-home --shell /usr/sbin/nologin ozonmcp
+#   ozon-seller-mcp --hash-password    # и положить в env-файл
 #   sudo systemctl enable --now ozon-seller-mcp
 
 [Unit]
@@ -21,6 +22,11 @@ Group=ozonmcp
 EnvironmentFile=/etc/ozon-seller-mcp.env
 
 ExecStart=/usr/local/bin/ozon-seller-mcp --http 127.0.0.1:8571
+
+# Хранилище OAuth: клиенты и токены должны переживать перезапуск,
+# иначе каждый рестарт отключает все устройства.
+StateDirectory=ozon-seller-mcp
+StateDirectoryMode=0700
 
 Restart=always
 RestartSec=5s

@@ -7,7 +7,7 @@
 // менять цены в магазине.
 //
 // Поэтому здесь авторизация — не опция, а условие запуска: сервер не
-// стартует без токенов.
+// стартует без настроенного способа проверки.
 package httpx
 
 import (
@@ -23,39 +23,50 @@ import (
 type Scope string
 
 const (
-	// ScopeRead — только чтение. Токен для телефона и любых мест,
-	// где вы не собираетесь ничего менять.
+	// ScopeRead — только чтение.
 	ScopeRead Scope = "read"
-	// ScopeWrite — чтение и запись. Должен жить только там, где вы
-	// действительно правите магазин.
+	// ScopeWrite — чтение и запись.
 	ScopeWrite Scope = "write"
 )
 
-// ErrNoTokens возвращается, когда сервер пытаются поднять без токенов.
-var ErrNoTokens = errors.New(
-	"httpx: сетевой режим требует хотя бы один токен. " +
-		"Сгенерируйте: ozon-seller-mcp --gen-token, затем задайте OZON_TOKEN_READ и/или OZON_TOKEN_WRITE")
+// ErrNoAuth возвращается, когда сервер пытаются поднять без защиты.
+var ErrNoAuth = errors.New(
+	"httpx: сетевой режим требует авторизации. Настройте OAuth (OZON_PUBLIC_URL + " +
+		"OZON_OWNER_PASSWORD_HASH, см. docs/OAUTH.md) либо, для автоматизации, " +
+		"задайте статический токен OZON_TOKEN_READ / OZON_TOKEN_WRITE")
 
-// Auth хранит токены и определяет права входящего запроса.
-type Auth struct {
+// StaticAuth — статические токены в заголовке Authorization.
+//
+// Оставлены для автоматизации: скрипт или соседний сервис не может
+// пройти экран согласия, а заводить ради него человека в цикле
+// бессмысленно. Для людей и клиентов Claude способ по умолчанию — OAuth.
+//
+// Чего здесь больше НЕТ — токена в адресе. Он позволял подключить
+// телефон, где интерфейс принимает только URL, но спецификация MCP
+// прямо запрещает передавать токен в строке запроса: адреса оседают
+// в журналах прокси и истории браузера. OAuth закрывает ту же задачу
+// без этой платы.
+type StaticAuth struct {
 	read  []byte
 	write []byte
 }
 
-// NewAuth создаёт проверку токенов. Пустая строка означает, что токен
-// с такими правами не выдан и подключиться с ним нельзя.
-func NewAuth(readToken, writeToken string) (*Auth, error) {
-	if readToken == "" && writeToken == "" {
-		return nil, ErrNoTokens
-	}
-	a := &Auth{}
+// NewStaticAuth создаёт проверку статических токенов.
+// Пустая строка означает, что токен с такими правами не выдан.
+func NewStaticAuth(readToken, writeToken string) *StaticAuth {
+	a := &StaticAuth{}
 	if readToken != "" {
 		a.read = []byte(readToken)
 	}
 	if writeToken != "" {
 		a.write = []byte(writeToken)
 	}
-	return a, nil
+	return a
+}
+
+// Enabled — задан ли хоть один статический токен.
+func (a *StaticAuth) Enabled() bool {
+	return a != nil && (len(a.read) > 0 || len(a.write) > 0)
 }
 
 // GenerateToken выдаёт случайный токен на 32 байта.
@@ -69,14 +80,12 @@ func GenerateToken() (string, error) {
 
 // Scope сопоставляет предъявленный токен с выданными.
 //
-// Сравнение идёт за постоянное время: обычное == раскрывает длину
-// совпавшего префикса и позволяет подобрать токен посимвольно.
-//
-// Пишущий токен проверяется первым, но оба сравнения выполняются
-// всегда — чтобы по времени ответа нельзя было понять, какой именно
-// токен предъявлен.
-func (a *Auth) Scope(token string) (Scope, bool) {
-	if token == "" {
+// Сравнение за постоянное время: обычное == раскрывает длину совпавшего
+// префикса и позволяет подобрать токен посимвольно. Оба сравнения
+// выполняются всегда, чтобы по времени ответа нельзя было понять,
+// какой именно токен предъявлен.
+func (a *StaticAuth) Scope(token string) (Scope, bool) {
+	if a == nil || token == "" {
 		return "", false
 	}
 	got := []byte(token)
@@ -94,39 +103,21 @@ func (a *Auth) Scope(token string) (Scope, bool) {
 	}
 }
 
-// TokenFromRequest достаёт токен из запроса.
+// bearerToken достаёт токен из заголовка Authorization.
 //
-// Поддерживаются два способа, и это не избыточность:
-//
-//   - Заголовок Authorization: Bearer — правильный вариант, доступен
-//     там, где клиент разрешает задать свои заголовки (Claude Code).
-//
-//   - Последний сегмент пути: /mcp/<токен> — единственный вариант там,
-//     где интерфейс принимает только адрес и ничего больше. Мобильное
-//     приложение относится именно к таким.
-//
-// Секрет в адресе — сознательный компромисс, а не недосмотр: он может
-// осесть в логах прокси и в истории браузера. Ради этого он и сделан
-// отзываемым одной строкой в конфигурации.
-func TokenFromRequest(r *http.Request) (token, basePath string) {
-	if h := r.Header.Get("Authorization"); h != "" {
-		if after, ok := strings.CutPrefix(h, "Bearer "); ok {
-			return strings.TrimSpace(after), r.URL.Path
+// Только заголовок: спецификация MCP требует именно его и запрещает
+// строку запроса.
+func bearerToken(r *http.Request) string {
+	h := r.Header.Get("Authorization")
+	if h == "" {
+		return ""
+	}
+	after, ok := strings.CutPrefix(h, "Bearer ")
+	if !ok {
+		// Регистр схемы по RFC 7235 не важен.
+		if after, ok = strings.CutPrefix(h, "bearer "); !ok {
+			return ""
 		}
 	}
-
-	// /mcp/<токен> -> токен, базовый путь /mcp
-	trimmed := strings.Trim(r.URL.Path, "/")
-	if trimmed == "" {
-		return "", r.URL.Path
-	}
-	parts := strings.Split(trimmed, "/")
-	last := parts[len(parts)-1]
-
-	// Токен всегда длинный: короткий последний сегмент — это часть
-	// адреса (например /mcp), а не секрет.
-	if len(parts) >= 2 && len(last) >= 32 {
-		return last, "/" + strings.Join(parts[:len(parts)-1], "/")
-	}
-	return "", r.URL.Path
+	return strings.TrimSpace(after)
 }

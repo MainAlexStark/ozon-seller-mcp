@@ -4,15 +4,13 @@
 #   sudo systemctl reload caddy
 
 ozon-mcp.example.com {
-	# Токен приходит в адресе, поэтому пути НЕ логируем: иначе секрет
-	# осядет в журнале сервера, а это ровно то, чего мы избегали.
+	# С переходом на OAuth секретов в адресе больше нет, поэтому пути
+	# логируются как обычно. Строку запроса всё же вычищаем: туда может
+	# попасть код авторизации, если клиент ошибётся с методом.
 	log {
 		output file /var/log/caddy/ozon-mcp.log
 		format filter {
 			request>uri query {
-				replace REDACTED
-			}
-			request>uri path {
 				replace REDACTED
 			}
 		}
