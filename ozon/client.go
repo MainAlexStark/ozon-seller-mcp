@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"time"
 )
 
@@ -37,6 +38,10 @@ type Client struct {
 
 	// maxRetries — сколько раз повторить запрос при 429 и 5xx.
 	maxRetries int
+
+	// proxy — адрес прокси без пароля, для диагностики.
+	proxy    string
+	proxyErr error
 }
 
 // Option настраивает клиент.
@@ -53,6 +58,46 @@ func WithLimiter(l *Limiter) Option { return func(c *Client) { c.limiter = l } }
 
 // WithMaxRetries меняет число повторов при 429 и 5xx.
 func WithMaxRetries(n int) Option { return func(c *Client) { c.maxRetries = n } }
+
+// WithProxy направляет запросы к Ozon через прокси.
+//
+// Нужен в одной конкретной, но частой ситуации: машина целиком сидит
+// под VPN (без него не работает что-то другое), а Ozon из-под этого
+// VPN недоступен — запросы к api-seller.ozon.ru просто не доходят.
+//
+// Прокси здесь задаётся ЯВНО и действует ТОЛЬКО на трафик к Ozon.
+// Полагаться на переменные HTTPS_PROXY нельзя: они глобальные, их
+// выставляют для других задач, и тогда либо ваш трафик уедет не туда,
+// либо чужой — сюда. Одна настройка — один эффект.
+//
+// Поддерживаются http://, https:// и socks5://; можно с логином:
+//
+//	socks5://user:pass@vps.example.com:1080
+func WithProxy(rawURL string) Option {
+	return func(c *Client) {
+		if rawURL == "" {
+			return
+		}
+		u, err := url.Parse(rawURL)
+		if err != nil {
+			c.proxyErr = fmt.Errorf("ozon: не разобрать адрес прокси %q: %w", rawURL, err)
+			return
+		}
+
+		transport := http.DefaultTransport.(*http.Transport).Clone()
+		transport.Proxy = http.ProxyURL(u)
+		c.http.Transport = transport
+		c.proxy = u.Redacted() // без пароля: строка попадает в диагностику
+	}
+}
+
+// Proxy возвращает адрес прокси без пароля, либо пустую строку.
+func (c *Client) Proxy() string { return c.proxy }
+
+// ProxyError возвращает ошибку разбора адреса прокси, если она была.
+// Проверяется на старте: молча ходить напрямую, когда человек просил
+// через прокси, — худший из возможных исходов.
+func (c *Client) ProxyError() error { return c.proxyErr }
 
 // New создаёт клиент.
 func New(clientID, apiKey string, opts ...Option) *Client {
@@ -147,7 +192,9 @@ func (c *Client) do(ctx context.Context, path string, body []byte) (json.RawMess
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("ozon: запрос %s: %w", path, err)
+		// Сбой соединения — не то же самое, что отказ Ozon: причина
+		// в маршруте, и подсказка нужна другая. См. neterr.go.
+		return nil, &NetworkError{Path: path, Proxy: c.proxy, Err: err}
 	}
 	defer resp.Body.Close()
 
@@ -161,3 +208,11 @@ func (c *Client) do(ctx context.Context, path string, body []byte) (json.RawMess
 	}
 	return raw, nil
 }
+
+// HTTPClient возвращает используемый HTTP-клиент.
+//
+// Нужен диагностике: чтобы узнать, с какого адреса нас видит внешний
+// мир, запрос должен идти через тот же транспорт (и тот же прокси),
+// что и обращения к Ozon. Иначе показанный адрес не имеет отношения
+// к тому, что видит Ozon.
+func (c *Client) HTTPClient() *http.Client { return c.http }

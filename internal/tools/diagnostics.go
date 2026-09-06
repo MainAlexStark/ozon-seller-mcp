@@ -79,23 +79,46 @@ func (r *Registry) RegisterDiagnostics() {
 		Handler: func(ctx context.Context, _ json.RawMessage) (string, error) {
 			list := probes()
 			results := make([]string, len(list))
+			errs := make([]error, len(list))
 
 			var wg sync.WaitGroup
 			for i, p := range list {
 				wg.Add(1)
 				go func(i int, p probe) {
 					defer wg.Done()
-					results[i] = runProbe(ctx, r.client, p)
+					results[i], errs[i] = runProbe(ctx, r.client, p)
 				}(i, p)
 			}
 			wg.Wait()
 
 			var b strings.Builder
 			b.WriteString("Проверка методов Ozon Seller API\n\n")
+
+			if px := r.client.Proxy(); px != "" {
+				fmt.Fprintf(&b, "Запросы идут через прокси: %s\n\n", px)
+			}
+
 			for _, line := range results {
 				b.WriteString(line)
 				b.WriteString("\n")
 			}
+
+			// Когда не отвечает ни один метод, дело не в методах.
+			// Разбирать их по одному в такой ситуации — потерянное время,
+			// поэтому вывод говорит об этом прямо.
+			if netFail := countNetworkFailures(errs); netFail == len(list) && netFail > 0 {
+				b.WriteString("\nНи один метод не ответил, и все сбои сетевые: " +
+					"до Ozon не доходят запросы.\n\n")
+				for _, e := range errs {
+					var netErr *ozon.NetworkError
+					if e != nil && asNet(e, &netErr) {
+						b.WriteString(netErr.Hint())
+						break
+					}
+				}
+				return b.String(), nil
+			}
+
 			b.WriteString("\nЕсли метод отвечает 404 — Ozon отключил эту версию. " +
 				"Сверьтесь с docs.ozon.ru/api/seller и поправьте ozon/paths.go.")
 			return b.String(), nil
@@ -103,8 +126,20 @@ func (r *Registry) RegisterDiagnostics() {
 	})
 }
 
+// countNetworkFailures считает сбои соединения.
+func countNetworkFailures(errs []error) int {
+	n := 0
+	for _, e := range errs {
+		var netErr *ozon.NetworkError
+		if e != nil && asNet(e, &netErr) {
+			n++
+		}
+	}
+	return n
+}
+
 // runProbe выполняет один пробный запрос и описывает результат строкой.
-func runProbe(ctx context.Context, c *ozon.Client, p probe) string {
+func runProbe(ctx context.Context, c *ozon.Client, p probe) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 
@@ -113,14 +148,19 @@ func runProbe(ctx context.Context, c *ozon.Client, p probe) string {
 	elapsed := time.Since(start).Round(time.Millisecond)
 
 	if err == nil {
-		return fmt.Sprintf("  OK       %-28s %-42s %s", p.Tool, p.Path, elapsed)
+		return fmt.Sprintf("  OK       %-28s %-42s %s", p.Tool, p.Path, elapsed), nil
 	}
 
 	var apiErr *ozon.APIError
 	if asAPI(err, &apiErr) {
-		return fmt.Sprintf("  HTTP %-3d %-28s %-42s %s", apiErr.StatusCode, p.Tool, p.Path, apiErr.Message)
+		return fmt.Sprintf("  HTTP %-3d %-28s %-42s %s", apiErr.StatusCode, p.Tool, p.Path, apiErr.Message), err
 	}
-	return fmt.Sprintf("  ОШИБКА   %-28s %-42s %v", p.Tool, p.Path, err)
+
+	var netErr *ozon.NetworkError
+	if asNet(err, &netErr) {
+		return fmt.Sprintf("  СЕТЬ     %-28s %-42s %s", p.Tool, p.Path, netErr.Kind()), err
+	}
+	return fmt.Sprintf("  ОШИБКА   %-28s %-42s %v", p.Tool, p.Path, err), err
 }
 
 // maskID показывает идентификатор, не выкладывая его целиком в чат.

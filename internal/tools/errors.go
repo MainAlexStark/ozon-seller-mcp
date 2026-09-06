@@ -11,6 +11,11 @@ func asAPI(err error, target **ozon.APIError) bool {
 	return errors.As(err, target)
 }
 
+// asNet — то же для сетевых сбоев.
+func asNet(err error, target **ozon.NetworkError) bool {
+	return errors.As(err, target)
+}
+
 // obj — сокращение для описания схем: карты в JSON Schema встречаются
 // на каждой строке, и без него объявления инструментов тонут в скобках.
 type obj = map[string]any

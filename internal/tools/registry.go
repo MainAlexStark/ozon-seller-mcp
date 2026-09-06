@@ -109,8 +109,17 @@ func (r *Registry) format(ctx context.Context, raw json.RawMessage) string {
 	return r.safetyFor(ctx).TrimResponse(string(pretty))
 }
 
-// decorate добавляет к ошибке Ozon человеческую подсказку.
+// decorate добавляет к ошибке человеческую подсказку.
+//
+// Два класса ошибок разбираются отдельно, потому что советы у них
+// противоположные: на отказ Ozon надо чинить запрос или ключ, на сбой
+// соединения — маршрут. Совет не из того класса стоит человеку вечера.
 func decorate(err error) error {
+	var netErr *ozon.NetworkError
+	if asNet(err, &netErr) {
+		return fmt.Errorf("%w\n\n%s", err, netErr.Hint())
+	}
+
 	var apiErr *ozon.APIError
 	if !asAPI(err, &apiErr) {
 		return err

@@ -73,7 +73,16 @@ func main() {
 	if base := os.Getenv("OZON_BASE_URL"); base != "" {
 		opts = append(opts, ozon.WithBaseURL(base))
 	}
+	if proxy := os.Getenv("OZON_PROXY"); proxy != "" {
+		opts = append(opts, ozon.WithProxy(proxy))
+	}
 	client := ozon.New(clientID, apiKey, opts...)
+
+	// Неверный адрес прокси — остановка, а не работа напрямую: молча
+	// пойти в обход того, что человек просил проксировать, хуже отказа.
+	if err := client.ProxyError(); err != nil {
+		fatal(err.Error())
+	}
 
 	safety := tools.DefaultSafety()
 	safety.MaxPriceDeltaPct = envFloat("OZON_MAX_PRICE_DELTA", safety.MaxPriceDeltaPct)
@@ -180,10 +189,23 @@ func printNewToken() {
 func runCheck(client *ozon.Client, srv *mcp.Server, safety tools.Safety) {
 	fmt.Printf("ozon-seller-mcp %s\n", version)
 	fmt.Printf("Инструментов: %d\n", len(srv.ToolNames()))
-	fmt.Printf("Режим stdio:  %s\n\n", safety.Mode)
+	fmt.Printf("Режим stdio:  %s\n", safety.Mode)
+	if px := client.Proxy(); px != "" {
+		fmt.Printf("Прокси:       %s\n", px)
+	} else {
+		fmt.Printf("Прокси:       не задан (прямое соединение)\n")
+	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
 	defer cancel()
+
+	// С какого адреса нас видит внешний мир. При разборе «почему Ozon
+	// не отвечает» это первый вопрос: если тут адрес VPN-выхода, а Ozon
+	// молчит по таймауту, дальше можно не искать.
+	if ip := outboundIP(ctx, client); ip != "" {
+		fmt.Printf("Внешний IP:   %s\n", ip)
+	}
+	fmt.Println()
 
 	fmt.Print("Проверяю ключи… ")
 	// filter обязателен даже когда фильтровать нечего: без него Ozon
@@ -195,6 +217,13 @@ func runCheck(client *ozon.Client, srv *mcp.Server, safety tools.Safety) {
 	})
 	if err != nil {
 		fmt.Println("не прошло")
+
+		var netErr *ozon.NetworkError
+		if netErrorsAs(err, &netErr) {
+			fmt.Printf("\n%s\n\n%s\n", netErr.Error(), netErr.Hint())
+			os.Exit(1)
+		}
+
 		var apiErr *ozon.APIError
 		if errorsAs(err, &apiErr) {
 			fmt.Printf("\n%s\n", apiErr.Error())
