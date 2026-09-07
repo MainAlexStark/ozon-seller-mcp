@@ -13,14 +13,6 @@
 	# С переходом на OAuth секретов в адресе больше нет, поэтому пути
 	# логируются как обычно. Строку запроса всё же вычищаем: туда может
 	# попасть код авторизации, если клиент ошибётся с методом.
-	log {
-		output file /var/log/caddy/ozon-mcp.log
-		format filter {
-			request>uri query {
-				replace REDACTED
-			}
-		}
-	}
 
 	reverse_proxy {$OZON_UPSTREAM:127.0.0.1:8571} {
 		# ozon_import_status с wait=true ждёт до 5 минут.
