@@ -36,6 +36,22 @@ func probes() []probe {
 			},
 			"limit": 1,
 		}},
+
+		// FBO. Эти методы переезжали недавно и порознь — список
+		// отправлений уехал на v3, получение одного осталось на v2,
+		// поставки на v3, — поэтому дёргать их по одному особенно
+		// полезно: отключение видно сразу и поимённо.
+		{"ozon_fbo_postings_list", ozon.PathPostingFBOList, obj{
+			"filter": obj{
+				"since": time.Now().AddDate(0, 0, -7).Format(time.RFC3339),
+				"to":    time.Now().Format(time.RFC3339),
+			},
+			"limit": 1,
+		}},
+		{"ozon_fbo_stocks", ozon.PathStockOnWarehouses, obj{"limit": 1, "offset": 0, "warehouse_type": "ALL"}},
+		{"ozon_supply_orders_list", ozon.PathSupplyOrderList, obj{"limit": 1}},
+		{"ozon_supply_orders_counters", ozon.PathSupplyOrderCounters, obj{}},
+		{"ozon_fbo_clusters", ozon.PathClusterList, obj{}},
 	}
 }
 

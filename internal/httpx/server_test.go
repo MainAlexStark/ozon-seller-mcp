@@ -30,6 +30,7 @@ func testServer(t *testing.T, ozonHandler http.HandlerFunc) (*httptest.Server, f
 	reg.RegisterCatalog()
 	reg.RegisterPricing()
 	reg.RegisterAnalytics()
+	reg.RegisterFBO()
 	reg.RegisterDiagnostics()
 
 	auth := Auth{Static: NewStaticAuth(readToken, writeToken)}
