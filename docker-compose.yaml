@@ -1,0 +1,12 @@
+services:
+  ozon-seller-mcp:
+    build:
+      context: .
+      args:
+        VERSION: ${VERSION:-docker}
+    container_name: ozon-seller-mcp
+    restart: unless-stopped
+    env_file:
+      - /etc/ozon-seller-mcp.env
+    ports:
+      - "127.0.0.1:8571:8571"

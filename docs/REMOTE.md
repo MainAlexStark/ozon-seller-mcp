@@ -7,6 +7,25 @@
 
 ## Развёртывание на VPS
 
+### 0. Docker
+
+1. При первом развертывании:
+```bash
+sudo cp deploy/ozon-seller-mcp.env /etc/ozon-seller-mcp.env
+sudo chmod 600 /etc/ozon-seller-mcp.env
+sudo nano /etc/ozon-seller-mcp.env
+```
+2. Используем docker compose:
+```bash
+cd /root/ozon-seller-mcp && \
+docker compose down \
+git pull --ff-only && \
+VERSION="$(git describe --tags --always)" \
+docker compose build && \
+docker compose up -d && \
+docker compose ps
+```
+
 ### 1. Сборка и установка
 
 ```bash
@@ -74,6 +93,16 @@ curl -s https://ozon-mcp.example.com/.well-known/oauth-protected-resource
 ```
 
 Поле `resource` обязано совпадать с адресом, который вы введёте в Claude, посимвольно.
+
+### 7. Применение обновлений
+
+```bash
+git pull --ff-only && \
+go build -ldflags "-s -w -X main.version=$(git describe --tags --always)" \
+  -o /usr/local/bin/ozon-seller-mcp ./cmd/ozon-seller-mcp && \
+sudo systemctl restart ozon-seller-mcp && \
+sudo systemctl --no-pager status ozon-seller-mcp
+```
 
 ## Подключение устройств
 
