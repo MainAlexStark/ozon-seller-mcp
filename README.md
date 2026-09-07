@@ -18,7 +18,15 @@ MCP-сервер для [Ozon Seller API](https://docs.ozon.ru/api/seller). Да
 
 Сетевой режим — [`docs/REMOTE.md`](docs/REMOTE.md), подключение устройств — [`docs/OAUTH.md`](docs/OAUTH.md).
 
+## Получите API Озон
+
+Получить ваш api-ключ и id пользователя можно в личном кабинете OZON-Seller
+``
+https://seller.ozon.ru/app/settings/api-keys
+``
+
 ## Установка
+
 
 ```bash
 go install github.com/MainAlexStark/ozon-seller-mcp/cmd/ozon-seller-mcp@latest
@@ -30,11 +38,9 @@ go install github.com/MainAlexStark/ozon-seller-mcp/cmd/ozon-seller-mcp@latest
 OZON_CLIENT_ID=... OZON_API_KEY=... ozon-seller-mcp --check
 ```
 
-Ключ выпускается в кабинете продавца: **Настройки → API-ключи**.
-
 > С сентября 2026 новые ключи выпускаются на 3 месяца. Если сервер внезапно перестал авторизовываться — скорее всего истёк ключ, а не сломался код.
 
-## Подключение к Claude Code
+## Подключение к Claude Code [STDIO]
 
 ```bash
 claude mcp add ozon \
@@ -43,7 +49,7 @@ claude mcp add ozon \
   -- ozon-seller-mcp
 ```
 
-## Подключение к Claude Desktop
+## Подключение к Claude Desktop [STDIO]
 
 `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) или `%APPDATA%\Claude\claude_desktop_config.json` (Windows):
 
@@ -60,6 +66,25 @@ claude mcp add ozon \
   }
 }
 ```
+
+## Подключение к Claude Desktop [Streamable HTTP]
+
+После того как вы развернули OZON-SELLER-MCP по инструкции из [`docs/REMOTE.md`](docs/REMOTE.md) на вашей удаленной машине, вы можете подключить новый коннектор в claude-desktop
+
+1. Claude Desktop → Settings → Connectors → Add custom connector
+2. URL: https://example.com/mcp
+3. Поля OAuth Client ID и Client Secret оставьте пустыми — сервер поддерживает динамическую регистрацию, Claude зарегистрируется сам
+4. Нажимаете Connect → откроется браузер с экраном согласия
+
+На экране согласия вводите пароль владельца и выбираете права.
+
+Проверить, что подключение записалось:
+
+```bash
+ozon-seller-mcp --grants
+```
+
+Адрес вводите точно как есть, без завершающего слэша: resource в метаданных сверяется посимвольно, и ``https://example.com/mcp/`` уже не совпадёт.
 
 Перезапустите Claude. Спросите «покажи статус подключения к Ozon» — сервер ответит через `ozon_status`.
 
