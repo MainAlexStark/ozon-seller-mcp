@@ -18,6 +18,9 @@ package ozon
 //	/v1/warehouse/list        -> /v2/warehouse/list
 //	/v1/delivery-method/list  -> /v2/delivery-method/list
 //	/v1/product/info/stocks-by-warehouse/fbs -> /v2/...
+//	/v2/posting/fbo/list      -> /v3/posting/fbo/list (отключён 31.08.2026)
+//	/v2/supply-order/{list,get} -> /v3/supply-order/{list,get}
+//	/v1/analytics/stock_on_warehouses -> /v2/analytics/stock_on_warehouses
 //
 // Инструмент ozon_api_selftest прогоняет все read-методы по одному
 // запросу и показывает, какие из них перестали отвечать: это дешевле,
@@ -59,6 +62,25 @@ const (
 	// --- Отправления FBS ---
 	PathPostingFBSList = "/v3/posting/fbs/list"
 	PathPostingFBSGet  = "/v3/posting/fbs/get"
+
+	// --- FBO: заказы со складов Ozon ---
+	//
+	// Список переехал на v3 (курсор вместо offset), а получение одного
+	// отправления осталось на v2: у Ozon версии переезжают поодиночке,
+	// а не разделами, поэтому соседние методы вполне живут на разных.
+	PathPostingFBOList = "/v3/posting/fbo/list"
+	PathPostingFBOGet  = "/v2/posting/fbo/get"
+
+	// --- FBO: поставки на склады Ozon ---
+	PathSupplyOrderList     = "/v3/supply-order/list"
+	PathSupplyOrderGet      = "/v3/supply-order/get"
+	PathSupplyOrderBundle   = "/v1/supply-order/bundle"
+	PathSupplyOrderCounters = "/v1/supply-order/status/counter"
+	PathSupplyTimeslots     = "/v2/supply-order/timeslot/list"
+
+	// --- FBO: склады Ozon и остатки на них ---
+	PathClusterList       = "/v2/cluster/list"
+	PathStockOnWarehouses = "/v2/analytics/stock_on_warehouses"
 
 	// --- Аналитика ---
 	PathAnalyticsData   = "/v1/analytics/data"

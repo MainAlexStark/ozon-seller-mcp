@@ -1,5 +1,7 @@
 package tools
 
+import "time"
+
 // Значения по умолчанию для тел запросов.
 //
 // У большинства методов Seller API поле filter обязательно даже тогда,
@@ -52,5 +54,39 @@ func withLimit(a map[string]any, n int) map[string]any {
 	if v, ok := a["limit"]; !ok || v == nil {
 		a["limit"] = n
 	}
+	return a
+}
+
+// withRecentPeriod достраивает filter.since/filter.to за последние
+// days дней.
+//
+// Методы отправлений требуют период обязательно, а вопрос к ним чаще
+// всего звучит как «что там с заказами» — без дат вообще. Отказывать
+// на это ошибкой значит заставлять модель угадывать формат RFC3339
+// со второй попытки; ответ за последнюю неделю ближе к тому, что
+// человек имел в виду.
+func withRecentPeriod(a map[string]any, days int) map[string]any {
+	if a == nil {
+		a = map[string]any{}
+	}
+
+	filter, _ := a["filter"].(map[string]any)
+	if filter == nil {
+		filter = map[string]any{}
+	}
+
+	since, hasSince := filter["since"]
+	to, hasTo := filter["to"]
+	if (hasSince && since != nil && since != "") || (hasTo && to != nil && to != "") {
+		// Хотя бы одна граница задана — вторую не додумываем: Ozon
+		// сам скажет, что не так, и это честнее нашей догадки.
+		a["filter"] = filter
+		return a
+	}
+
+	now := time.Now()
+	filter["since"] = now.AddDate(0, 0, -days).Format(time.RFC3339)
+	filter["to"] = now.Format(time.RFC3339)
+	a["filter"] = filter
 	return a
 }

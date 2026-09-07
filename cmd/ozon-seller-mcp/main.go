@@ -118,6 +118,7 @@ func main() {
 	reg.RegisterCatalog()
 	reg.RegisterPricing()
 	reg.RegisterAnalytics()
+	reg.RegisterFBO()
 	reg.RegisterDiagnostics()
 
 	if *check {

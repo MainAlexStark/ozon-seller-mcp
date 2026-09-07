@@ -1,6 +1,6 @@
 # ozon-seller-mcp
 
-MCP-сервер для [Ozon Seller API](https://docs.ozon.ru/api/seller). Даёт Claude доступ к кабинету продавца: каталог, цены, остатки, аналитика, финансы, отправления — 29 инструментов.
+MCP-сервер для [Ozon Seller API](https://docs.ozon.ru/api/seller). Даёт Claude доступ к кабинету продавца: каталог, цены, остатки, аналитика, финансы, отправления FBS и поставки FBO — 38 инструментов.
 
 Внутри лежит и самостоятельный Go-клиент Seller API (`ozon/`) — его можно использовать отдельно от MCP.
 
@@ -153,7 +153,9 @@ ozon-seller-mcp --grants
 | Цены и остатки (запись) | `prices_update`, `stocks_update` |
 | Аналитика | `analytics_data`, `analytics_stocks` |
 | Финансы | `finance_by_day`, `finance_postings`, `finance_accrual_types` |
-| Заказы | `postings_list`, `posting_get`, `reviews_list` |
+| Заказы FBS | `postings_list`, `posting_get`, `reviews_list` |
+| FBO: заказы и остатки | `fbo_postings_list`, `fbo_posting_get`, `fbo_stocks`, `fbo_clusters` |
+| FBO: поставки | `supply_orders_list`, `supply_order_get`, `supply_order_items`, `supply_orders_counters`, `supply_timeslots` |
 | Диагностика | `status`, `api_selftest` |
 
 Все имена — с префиксом `ozon_`.
@@ -167,6 +169,8 @@ Ozon отключает старые версии методов по распи
 - на HTTP 404 сервер сам подсказывает, что версия, вероятно, отключена.
 
 Актуальные на сентябрь 2026 переезды уже применены: `/v5/product/info/prices`, `/v4/product/info/stocks`, `/v3/product/list`, `/v4/product/info/attributes`, `/v3/product/info/list`, `/v2/product/pictures/info`. Отключённый `/v3/finance/transaction/list` заменён тремя методами `/v1/finance/accrual/*` — у них окно запроса ограничено месяцем, и сервер проверяет это до отправки.
+
+В FBO переезды прошли неравномерно: список отправлений уехал на `/v3/posting/fbo/list` (старый отключён 31.08.2026), а получение одного отправления осталось на `/v2/posting/fbo/get`. Поставки — на `/v3/supply-order/*`, остатки на складах Ozon — на `/v2/analytics/stock_on_warehouses`. Все они проверяются `ozon_api_selftest`: если ваш кабинет отвечает по другим версиям, это видно с первого вызова.
 
 ## Устройство
 
