@@ -1,12 +1,102 @@
+# Развёртывание на VPS: сервер и TLS одной командой.
+#
+#   sudo docker compose up -d --build
+#
+# Что где лежит:
+#
+#   /etc/ozon-seller-mcp.env  секреты — ключ Ozon, хеш пароля владельца.
+#                             root, права 600, в репозиторий не попадает.
+#   .env рядом с этим файлом  только домен. Секретов там нет, поэтому
+#                             его не страшно держать в каталоге проекта.
+#
+# Адрес сервера указывается один раз — в .env. Отсюда он попадает и
+# в Caddy (для сертификата), и в OZON_PUBLIC_URL самого сервера: два
+# разных адреса в этих местах ломают OAuth молча, поэтому лучше не
+# давать возможности их разойтись.
+
+name: ozon-seller-mcp
+
 services:
   ozon-seller-mcp:
     build:
       context: .
       args:
         VERSION: ${VERSION:-docker}
+
     container_name: ozon-seller-mcp
+
     restart: unless-stopped
+
     env_file:
       - /etc/ozon-seller-mcp.env
+
+    environment:
+      # Перекрывает значение из env-файла: адрес живёт в .env, а не
+      # в двух местах сразу. Наличие этой переменной включает OAuth.
+      OZON_PUBLIC_URL: https://${OZON_DOMAIN:?укажите домен в .env рядом с docker-compose.yaml, например OZON_DOMAIN=ozon-mcp.example.com}
+
+    # Наружу порт не выставлен: снаружи виден только Caddy, а он ходит
+    # сюда по внутренней сети compose. Для отладки с самой машины можно
+    # временно раскомментировать:
+    #
+    #   ports:
+    #     - "127.0.0.1:8571:8571"
+    expose:
+      - "8571"
+
+    # Хранилище OAuth: подключённые устройства и их токены. Именованный
+    # том, а не каталог с хоста, — том наследует владельца от образа,
+    # и сервер под nonroot может в него писать; на каталоге с хоста
+    # пришлось бы вручную выставлять владельца, а забытый chown выглядит
+    # как «сервер не стартует» без внятной причины.
+    #
+    # Том переживает пересборку. Без него каждое обновление отключало бы
+    # все устройства разом.
+    volumes:
+      - oauth:/var/lib/ozon-seller-mcp
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  caddy:
+    image: caddy:2-alpine
+
+    container_name: ozon-seller-mcp-caddy
+
+    restart: unless-stopped
+
+    depends_on:
+      - ozon-seller-mcp
+
+    # 80 нужен не для сайта, а для выпуска сертификата: Let's Encrypt
+    # проверяет владение доменом по HTTP.
     ports:
-      - "127.0.0.1:8571:8571"
+      - "80:80"
+      - "443:443"
+
+    environment:
+      OZON_DOMAIN: ${OZON_DOMAIN}
+      OZON_UPSTREAM: ozon-seller-mcp:8571
+
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      # Сертификаты. Без тома Let's Encrypt выпускал бы их заново на
+      # каждый перезапуск и быстро упёрся бы в недельный лимит.
+      - caddy-data:/data
+      - caddy-config:/config
+      - caddy-logs:/var/log/caddy
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  oauth:
+  caddy-data:
+  caddy-config:
+  caddy-logs:

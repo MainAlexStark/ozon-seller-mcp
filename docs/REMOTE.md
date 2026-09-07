@@ -7,24 +7,59 @@
 
 ## Развёртывание на VPS
 
-### 0. Docker
+Способа два. Docker Compose поднимает сразу и сервер, и TLS — это две команды и один способ обновляться. Ниже него — те же шаги вручную, под systemd: пригодится, если Docker на машине нежелателен.
 
-1. При первом развертывании:
+## Docker Compose
+
+### 1. Секреты — один раз
+
 ```bash
-sudo cp deploy/ozon-seller-mcp.env /etc/ozon-seller-mcp.env
-sudo chmod 600 /etc/ozon-seller-mcp.env
-sudo nano /etc/ozon-seller-mcp.env
+sudo install -m 600 deploy/ozon-seller-mcp.env /etc/ozon-seller-mcp.env
+sudo nano /etc/ozon-seller-mcp.env      # ключ Ozon и хеш пароля владельца
 ```
-2. Используем docker compose:
+
+Хеш пароля считается тем же бинарником — если его ещё нет под рукой, проще всего одноразовым контейнером:
+
 ```bash
-cd /root/ozon-seller-mcp && \
-docker compose down \
-git pull --ff-only && \
-VERSION="$(git describe --tags --always)" \
-docker compose build && \
-docker compose up -d && \
-docker compose ps
+docker compose run --rm --entrypoint /ozon-seller-mcp ozon-seller-mcp --hash-password
 ```
+
+Адрес сервера (`OZON_PUBLIC_URL`) в этом файле трогать не нужно: в docker-развёртывании он подставляется из `.env`.
+
+### 2. Домен и запуск
+
+```bash
+echo "OZON_DOMAIN=ozon-mcp.example.com" > .env
+sudo docker compose up -d --build
+```
+
+Всё: собрался образ, поднялся сервер, Caddy выпустил сертификат. Домен указан один раз — отсюда он попадает и в сертификат, и в `OZON_PUBLIC_URL` сервера. Наружу открыты только 80 и 443; сам сервер порт не публикует и виден только Caddy по внутренней сети.
+
+Проверить:
+
+```bash
+sudo docker compose ps
+curl -s https://ozon-mcp.example.com/healthz
+```
+
+### 3. Обновление
+
+```bash
+git pull --ff-only
+sudo VERSION="$(git describe --tags --always)" docker compose up -d --build
+```
+
+`down` перед этим не нужен: compose сам пересоздаёт то, что изменилось. Подключённые устройства обновление переживают — клиенты и токены лежат в томе `oauth`, а не в контейнере.
+
+Журналы и данные:
+
+```bash
+sudo docker compose logs -f ozon-seller-mcp   # что делает сервер
+sudo docker compose logs -f caddy             # выпуск сертификата, ошибки TLS
+sudo docker volume ls | grep ozon-seller-mcp  # oauth, сертификаты, логи Caddy
+```
+
+## Вручную, под systemd
 
 ### 1. Сборка и установка
 
@@ -121,17 +156,12 @@ ozon-seller-mcp --grants           # кто подключён
 ozon-seller-mcp --revoke <выдача>  # отключить одно устройство
 ```
 
-## Docker
+В docker-развёртывании те же команды идут внутрь контейнера — хранилище выдач лежит там:
 
 ```bash
-docker build -t ozon-seller-mcp .
-docker run -d --name ozon-mcp \
-  -p 127.0.0.1:8571:8571 \
-  --env-file /etc/ozon-seller-mcp.env \
-  ozon-seller-mcp
+sudo docker compose exec ozon-seller-mcp /ozon-seller-mcp --grants
+sudo docker compose exec ozon-seller-mcp /ozon-seller-mcp --revoke <выдача>
 ```
-
-Публикация порта тоже только на петлю: TLS остаётся за обратным прокси.
 
 ## Что ещё стоит включить
 
