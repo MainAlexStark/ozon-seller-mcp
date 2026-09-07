@@ -1,7 +1,6 @@
 package tools
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/MainAlexStark/ozon-seller-mcp/internal/mcp"
+	"github.com/MainAlexStark/ozon-seller-mcp/internal/mcptest"
 	"github.com/MainAlexStark/ozon-seller-mcp/ozon"
 )
 
@@ -34,40 +34,23 @@ func fakeOzon(t *testing.T, mode Mode, handler http.HandlerFunc) (*Registry, *mc
 	return reg, server, srv.Close
 }
 
-// callTool вызывает инструмент напрямую через протокол MCP.
+// callTool вызывает инструмент через настоящий протокол: поднимает
+// сессию, проходит рукопожатие и делает tools/call. Так в тест попадает
+// и разбор аргументов, и форма ответа, а не только тело обработчика.
 func callTool(t *testing.T, server *mcp.Server, name string, args any) (string, bool) {
 	t.Helper()
 
-	argsJSON, err := json.Marshal(args)
+	sess, err := mcptest.Start(server)
 	if err != nil {
-		t.Fatalf("аргументы: %v", err)
+		t.Fatalf("сессия не поднялась: %v", err)
 	}
-	req := map[string]any{
-		"jsonrpc": "2.0", "id": 1, "method": "tools/call",
-		"params": map[string]any{"name": name, "arguments": json.RawMessage(argsJSON)},
-	}
-	line, _ := json.Marshal(req)
+	defer sess.Close()
 
-	var out strings.Builder
-	if err := server.Serve(context.Background(), strings.NewReader(string(line)+"\n"), &out); err != nil {
-		t.Fatalf("Serve: %v", err)
+	res, err := sess.Call(name, args)
+	if err != nil {
+		t.Fatalf("вызов %s: %v", name, err)
 	}
-
-	var resp struct {
-		Result struct {
-			Content []struct {
-				Text string `json:"text"`
-			} `json:"content"`
-			IsError bool `json:"isError"`
-		} `json:"result"`
-	}
-	if err := json.Unmarshal([]byte(strings.TrimSpace(out.String())), &resp); err != nil {
-		t.Fatalf("ответ не разобрался: %v\n%s", err, out.String())
-	}
-	if len(resp.Result.Content) == 0 {
-		t.Fatalf("пустой ответ: %s", out.String())
-	}
-	return resp.Result.Content[0].Text, resp.Result.IsError
+	return res.Text, res.IsError
 }
 
 func TestAllToolsRegisteredWithoutCollisions(t *testing.T) {

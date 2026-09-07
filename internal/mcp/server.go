@@ -1,54 +1,74 @@
-// Package mcp — минимальный каркас MCP-сервера поверх stdio.
+// Package mcp — тонкий слой над официальным Go SDK протокола MCP.
 //
-// Здесь реализован транспорт и диспетчеризация JSON-RPC: initialize,
-// tools/list, tools/call. Бизнес-логики в MCP-серверах нет и не должно
-// быть — они только описывают схему тула и вызывают функцию из pkg/*.
+// Здесь остались только две вещи: описание инструмента и способы отдать
+// набор инструментов наружу — потоком newline-JSON (stdio) и
+// обработчиком HTTP. Сам протокол — рукопожатие, согласование версий,
+// форма ошибок, режим без состояния — держит
+// github.com/modelcontextprotocol/go-sdk.
 //
-// Почему свой мини-каркас, а не сразу официальный SDK: на этапе Ф0
-// важно, чтобы репозиторий собирался без единой внешней зависимости.
-// Когда дойдёт до продакшена, здесь останется тот же интерфейс Tool,
-// а внутренности заменит github.com/modelcontextprotocol/go-sdk.
+// Раньше на этом месте лежала собственная реализация JSON-RPC. Она
+// позволяла собирать репозиторий без единой внешней зависимости, но
+// платой было обещание самому догонять спецификацию, которая меняется
+// несколько раз в год: версии протокола, требования к заголовкам,
+// поведение stateless-режима. Догонять её вручную ради тридцати
+// инструментов — не та работа, ради которой писался этот сервер.
+//
+// Граница пакета сохранена намеренно: internal/tools не знает ни про
+// JSON-RPC, ни про типы SDK. Поэтому следующая смена версии протокола
+// останавливается здесь и не расходится по всем инструментам.
 package mcp
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
+	"log/slog"
+	"net/http"
 	"sync"
-)
 
-// ProtocolVersion — версия MCP, о которой договариваемся при initialize.
-const ProtocolVersion = "2025-06-18"
+	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
+)
 
 // Tool — один инструмент, доступный модели.
 type Tool struct {
 	Name        string
 	Description string
+
 	// InputSchema — JSON Schema аргументов. Модель видит именно её,
 	// поэтому описание полей здесь важнее, чем кажется.
 	InputSchema map[string]any
+
 	// Handler получает сырые аргументы и возвращает текст результата.
 	Handler func(ctx context.Context, args json.RawMessage) (string, error)
 }
 
-// Server — набор инструментов, обслуживаемый по stdio.
+// Server — набор инструментов, который можно отдать любым из двух
+// транспортов.
 type Server struct {
-	name    string
-	version string
+	impl *sdk.Server
 
+	// Порядок и имена ведём сами: SDK хранит инструменты в своей
+	// структуре, а нам нужен стабильный порядок регистрации для
+	// диагностики и проверка на повторное имя.
 	mu    sync.RWMutex
-	tools map[string]Tool
 	order []string
+	known map[string]struct{}
 }
 
 // NewServer создаёт сервер с именем и версией.
 func NewServer(name, version string) *Server {
 	return &Server{
-		name:    name,
-		version: version,
-		tools:   make(map[string]Tool),
+		impl: sdk.NewServer(
+			&sdk.Implementation{Name: name, Version: version},
+			&sdk.ServerOptions{
+				// Список инструментов фиксируется на старте и больше не
+				// меняется, поэтому listChanged не объявляем: клиенту
+				// незачем ждать уведомлений, которых не будет. Заодно
+				// не объявляем и логирование, которого сервер не ведёт.
+				Capabilities: &sdk.ServerCapabilities{Tools: &sdk.ToolCapabilities{}},
+			},
+		),
+		known: make(map[string]struct{}),
 	}
 }
 
@@ -56,13 +76,45 @@ func NewServer(name, version string) *Server {
 // программиста, поэтому паникуем на старте, а не молча перетираем.
 func (s *Server) Register(t Tool) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if _, dup := s.tools[t.Name]; dup {
+	if _, dup := s.known[t.Name]; dup {
+		s.mu.Unlock()
 		panic("mcp: инструмент уже зарегистрирован: " + t.Name)
 	}
-	s.tools[t.Name] = t
+	s.known[t.Name] = struct{}{}
 	s.order = append(s.order, t.Name)
+	s.mu.Unlock()
+
+	schema := t.InputSchema
+	if schema == nil {
+		schema = map[string]any{"type": "object"}
+	}
+
+	handler := t.Handler
+
+	// Регистрируем низкоуровневым способом: аргументы доходят до
+	// инструмента сырыми и разбираются им самим. Типизированный AddTool
+	// из SDK проверял бы их по схеме сам, но потребовал бы описать
+	// каждый инструмент структурой Go — это отдельная работа, и делать
+	// её заодно со сменой каркаса значило бы менять две вещи разом.
+	s.impl.AddTool(&sdk.Tool{
+		Name:        t.Name,
+		Description: t.Description,
+		InputSchema: schema,
+	}, func(ctx context.Context, req *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
+		text, err := handler(ctx, req.Params.Arguments)
+		if err != nil {
+			// Ошибка инструмента возвращается как результат с isError,
+			// а не как ошибка протокола: модель должна её прочитать
+			// и попробовать исправиться, а не считать сервер сломанным.
+			return &sdk.CallToolResult{
+				Content: []sdk.Content{&sdk.TextContent{Text: err.Error()}},
+				IsError: true,
+			}, nil
+		}
+		return &sdk.CallToolResult{
+			Content: []sdk.Content{&sdk.TextContent{Text: text}},
+		}, nil
+	})
 }
 
 // ToolNames перечисляет инструменты в порядке регистрации.
@@ -72,159 +124,61 @@ func (s *Server) ToolNames() []string {
 	return append([]string(nil), s.order...)
 }
 
-type request struct {
-	JSONRPC string          `json:"jsonrpc"`
-	ID      json.RawMessage `json:"id,omitempty"`
-	Method  string          `json:"method"`
-	Params  json.RawMessage `json:"params,omitempty"`
-}
-
-type response struct {
-	JSONRPC string  `json:"jsonrpc"`
-	ID      any     `json:"id,omitempty"`
-	Result  any     `json:"result,omitempty"`
-	Error   *rpcErr `json:"error,omitempty"`
-}
-
-type rpcErr struct {
-	Code    int    `json:"code"`
-	Message string `json:"message"`
-}
-
-// Serve обслуживает поток JSON-RPC: по одному сообщению на строку.
+// Serve обслуживает поток newline-JSON: так с сервером разговаривает
+// Claude, запустивший его подпроцессом.
 func (s *Server) Serve(ctx context.Context, in io.Reader, out io.Writer) error {
-	sc := bufio.NewScanner(in)
-	sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
-
-	enc := json.NewEncoder(out)
-
-	for sc.Scan() {
-		line := sc.Bytes()
-		if len(line) == 0 {
-			continue
-		}
-
-		var req request
-		if err := json.Unmarshal(line, &req); err != nil {
-			_ = enc.Encode(response{JSONRPC: "2.0", Error: &rpcErr{Code: -32700, Message: "parse error"}})
-			continue
-		}
-
-		resp := s.handle(ctx, req)
-
-		// Уведомления (без id) ответа не требуют.
-		if len(req.ID) == 0 {
-			continue
-		}
-		if err := enc.Encode(resp); err != nil {
-			return err
-		}
-	}
-	return sc.Err()
+	return s.impl.Run(ctx, &sdk.IOTransport{
+		Reader: io.NopCloser(in),
+		Writer: nopCloser{out},
+	})
 }
 
-// HandleMessage обрабатывает одно JSON-RPC сообщение и возвращает
-// закодированный ответ.
+// StreamableOptions — настройки сетевого обработчика.
+type StreamableOptions struct {
+	Logger *slog.Logger
+
+	// MaxRequestBytes — потолок размера тела запроса. 0 оставляет
+	// значение SDK по умолчанию.
+	MaxRequestBytes int64
+}
+
+// StreamableHandler возвращает обработчик MCP поверх Streamable HTTP.
 //
-// Вынесено в публичный метод, чтобы транспорты (stdio и HTTP) делили
-// одну реализацию протокола: расхождение между ними — это разное
-// поведение сервера в зависимости от способа подключения, а такое
-// не отлаживается.
+// Режим без состояния: сервер не выдаёт Mcp-Session-Id и не требует
+// его, каждый запрос самодостаточен. Так было и в собственной
+// реализации, и причина та же — такой сервер переживает перезапуск
+// процесса и не ломается за балансировщиком.
 //
-// Для уведомления (сообщения без id) возвращается nil без ошибки:
-// отвечать не на что.
-func (s *Server) HandleMessage(ctx context.Context, message []byte) ([]byte, error) {
-	var req request
-	if err := json.Unmarshal(message, &req); err != nil {
-		return json.Marshal(response{
-			JSONRPC: "2.0",
-			Error:   &rpcErr{Code: -32700, Message: "parse error"},
+// Авторизация, проверка Origin и права подключения остаются снаружи,
+// в internal/httpx: SDK ничего не знает ни про токены, ни про то, кому
+// разрешена запись.
+func (s *Server) StreamableHandler(opts StreamableOptions) http.Handler {
+	return sdk.NewStreamableHTTPHandler(
+		func(*http.Request) *sdk.Server { return s.impl },
+		&sdk.StreamableHTTPOptions{
+			Stateless: true,
+
+			// Ответ отдаётся обычным JSON, а не потоком событий: сервер
+			// ничего не шлёт по своей инициативе, а с JSON проще жить
+			// автоматизации, которая ходит сюда со статическим токеном.
+			JSONResponse: true,
+
+			MaxRequestBodyBytes: opts.MaxRequestBytes,
+			Logger:              opts.Logger,
+
+			// Встроенную в SDK защиту от DNS rebinding приходится
+			// выключить: она отклоняет запрос, пришедший на localhost
+			// с внешним Host, а это ровно штатная схема развёртывания —
+			// Caddy на 443 и сервер на 127.0.0.1:8571. Проверка Origin
+			// стоит в internal/httpx и работает для всех запросов.
+			DisableLocalhostProtection: true,
 		})
-	}
-
-	if len(req.ID) == 0 {
-		return nil, nil
-	}
-	return json.Marshal(s.handle(ctx, req))
 }
 
-func (s *Server) handle(ctx context.Context, req request) response {
-	out := response{JSONRPC: "2.0"}
-	if len(req.ID) > 0 {
-		var id any
-		_ = json.Unmarshal(req.ID, &id)
-		out.ID = id
-	}
-
-	switch req.Method {
-	case "initialize":
-		out.Result = map[string]any{
-			"protocolVersion": ProtocolVersion,
-			"capabilities":    map[string]any{"tools": map[string]any{}},
-			"serverInfo":      map[string]any{"name": s.name, "version": s.version},
-		}
-
-	case "tools/list":
-		out.Result = map[string]any{"tools": s.describe()}
-
-	case "tools/call":
-		text, err := s.call(ctx, req.Params)
-		if err != nil {
-			// Ошибка инструмента возвращается как результат с isError,
-			// а не как ошибка протокола: модель должна её прочитать
-			// и попробовать исправиться, а не считать сервер сломанным.
-			out.Result = map[string]any{
-				"content": []map[string]any{{"type": "text", "text": err.Error()}},
-				"isError": true,
-			}
-			break
-		}
-		out.Result = map[string]any{
-			"content": []map[string]any{{"type": "text", "text": text}},
-		}
-
-	default:
-		out.Error = &rpcErr{Code: -32601, Message: "method not found: " + req.Method}
-	}
-
-	return out
+// nopCloser добавляет Close писателю: транспорт SDK принимает
+// io.WriteCloser, а закрывать stdout или буфер теста незачем.
+type nopCloser struct {
+	io.Writer
 }
 
-func (s *Server) describe() []map[string]any {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	list := make([]map[string]any, 0, len(s.order))
-	for _, name := range s.order {
-		t := s.tools[name]
-		schema := t.InputSchema
-		if schema == nil {
-			schema = map[string]any{"type": "object"}
-		}
-		list = append(list, map[string]any{
-			"name":        t.Name,
-			"description": t.Description,
-			"inputSchema": schema,
-		})
-	}
-	return list
-}
-
-func (s *Server) call(ctx context.Context, params json.RawMessage) (string, error) {
-	var p struct {
-		Name      string          `json:"name"`
-		Arguments json.RawMessage `json:"arguments"`
-	}
-	if err := json.Unmarshal(params, &p); err != nil {
-		return "", fmt.Errorf("mcp: неразбираемые параметры вызова: %w", err)
-	}
-
-	s.mu.RLock()
-	t, ok := s.tools[p.Name]
-	s.mu.RUnlock()
-	if !ok {
-		return "", fmt.Errorf("mcp: неизвестный инструмент %q", p.Name)
-	}
-
-	return t.Handler(ctx, p.Arguments)
-}
+func (nopCloser) Close() error { return nil }

@@ -1,24 +1,31 @@
-package mcp
+package mcp_test
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
-	"strings"
+	"reflect"
 	"testing"
+
+	"github.com/MainAlexStark/ozon-seller-mcp/internal/mcp"
+	"github.com/MainAlexStark/ozon-seller-mcp/internal/mcptest"
 )
 
-func newTestServer() *Server {
-	s := NewServer("test", "0.0.1")
-	s.Register(Tool{
+// echoSchema объявлен отдельно, чтобы тест мог сверить, что схема
+// доезжает до клиента ровно такой, какой её написали: модель принимает
+// решения по ней, и любая правка по дороге меняет её поведение.
+var echoSchema = map[string]any{
+	"type":       "object",
+	"properties": map[string]any{"text": map[string]any{"type": "string"}},
+	"required":   []any{"text"},
+}
+
+func newTestServer() *mcp.Server {
+	s := mcp.NewServer("test", "0.0.1")
+	s.Register(mcp.Tool{
 		Name:        "echo",
 		Description: "возвращает переданный текст",
-		InputSchema: map[string]any{
-			"type":       "object",
-			"properties": map[string]any{"text": map[string]any{"type": "string"}},
-			"required":   []string{"text"},
-		},
+		InputSchema: echoSchema,
 		Handler: func(_ context.Context, args json.RawMessage) (string, error) {
 			var a struct {
 				Text string `json:"text"`
@@ -35,88 +42,122 @@ func newTestServer() *Server {
 	return s
 }
 
-func run(t *testing.T, s *Server, lines ...string) []map[string]any {
+func start(t *testing.T) *mcptest.Session {
 	t.Helper()
 
-	var out bytes.Buffer
-	in := strings.NewReader(strings.Join(lines, "\n") + "\n")
-	if err := s.Serve(context.Background(), in, &out); err != nil {
-		t.Fatalf("Serve: %v", err)
+	sess, err := mcptest.Start(newTestServer())
+	if err != nil {
+		t.Fatalf("сессия не поднялась: %v", err)
 	}
-
-	var got []map[string]any
-	for _, l := range strings.Split(strings.TrimSpace(out.String()), "\n") {
-		if l == "" {
-			continue
-		}
-		var m map[string]any
-		if err := json.Unmarshal([]byte(l), &m); err != nil {
-			t.Fatalf("ответ не JSON: %q", l)
-		}
-		got = append(got, m)
-	}
-	return got
+	t.Cleanup(func() { _ = sess.Close() })
+	return sess
 }
 
-func TestInitializeAndToolsList(t *testing.T) {
-	got := run(t, newTestServer(),
-		`{"jsonrpc":"2.0","id":1,"method":"initialize"}`,
-		`{"jsonrpc":"2.0","id":2,"method":"tools/list"}`,
-	)
+func TestHandshakeReportsServerInfo(t *testing.T) {
+	sess := start(t)
 
-	if len(got) != 2 {
-		t.Fatalf("ожидалось 2 ответа, получено %d", len(got))
+	info := sess.ServerInfo()
+	if info.Name != "test" || info.Version != "0.0.1" {
+		t.Errorf("serverInfo = %+v", info)
+	}
+	if info.ProtocolVersion == "" {
+		t.Error("сервер не назвал версию протокола")
+	}
+}
+
+func TestToolsListShowsSchemaUnchanged(t *testing.T) {
+	sess := start(t)
+
+	list, err := sess.Tools()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 || list[0].Name != "echo" {
+		t.Fatalf("tools/list вернул %+v", list)
 	}
 
-	info := got[0]["result"].(map[string]any)["serverInfo"].(map[string]any)
-	if info["name"] != "test" {
-		t.Errorf("serverInfo.name = %v", info["name"])
-	}
+	// Схема проходит через протокол JSON, поэтому сверяем с тем, во что
+	// превращается исходная карта после разбора: важно, что не потеряны
+	// поля, а не то, каким типом представлено число.
+	var want map[string]any
+	raw, _ := json.Marshal(echoSchema)
+	_ = json.Unmarshal(raw, &want)
 
-	tools := got[1]["result"].(map[string]any)["tools"].([]any)
-	if len(tools) != 1 || tools[0].(map[string]any)["name"] != "echo" {
-		t.Errorf("tools/list вернул %v", tools)
+	if !reflect.DeepEqual(list[0].InputSchema, want) {
+		t.Errorf("схема доехала изменённой:\nполучено %v\nожидалось %v", list[0].InputSchema, want)
 	}
 }
 
 func TestToolsCall(t *testing.T) {
-	got := run(t, newTestServer(),
-		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{"text":"привет"}}}`,
-	)
+	sess := start(t)
 
-	content := got[0]["result"].(map[string]any)["content"].([]any)
-	if content[0].(map[string]any)["text"] != "привет" {
-		t.Errorf("неожиданный ответ: %v", content)
+	res, err := sess.Call("echo", map[string]any{"text": "привет"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.IsError || res.Text != "привет" {
+		t.Errorf("неожиданный ответ: %+v", res)
 	}
 }
 
 func TestToolErrorIsResultNotProtocolError(t *testing.T) {
 	// Ошибка инструмента должна доходить до модели как текст,
 	// иначе она не сможет исправить аргументы.
-	got := run(t, newTestServer(),
-		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{}}}`,
-	)
+	sess := start(t)
 
-	if _, isProtocolErr := got[0]["error"]; isProtocolErr {
-		t.Fatal("ошибка инструмента не должна быть ошибкой протокола")
+	res, err := sess.Call("echo", map[string]any{})
+	if err != nil {
+		t.Fatalf("ошибка инструмента не должна быть ошибкой протокола: %v", err)
 	}
-	res := got[0]["result"].(map[string]any)
-	if res["isError"] != true {
-		t.Errorf("ожидался isError=true, получено %v", res)
+	if !res.IsError {
+		t.Errorf("ожидался isError=true, получено %+v", res)
+	}
+	if res.Text == "" {
+		t.Error("причина отказа должна доезжать текстом")
+	}
+}
+
+func TestUnknownToolIsProtocolError(t *testing.T) {
+	sess := start(t)
+
+	_, rpcErr, err := sess.Request("tools/call", map[string]any{
+		"name":      "нет-такого",
+		"arguments": map[string]any{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rpcErr == nil {
+		t.Fatal("неизвестный инструмент должен давать ошибку протокола")
 	}
 }
 
 func TestUnknownMethod(t *testing.T) {
-	got := run(t, newTestServer(), `{"jsonrpc":"2.0","id":1,"method":"nope"}`)
-	if got[0]["error"] == nil {
+	sess := start(t)
+
+	_, rpcErr, err := sess.Request("nope", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rpcErr == nil {
 		t.Fatal("неизвестный метод должен давать ошибку протокола")
 	}
 }
 
 func TestNotificationGetsNoResponse(t *testing.T) {
-	got := run(t, newTestServer(), `{"jsonrpc":"2.0","method":"notifications/initialized"}`)
-	if len(got) != 0 {
-		t.Fatalf("на уведомление не должно быть ответа, получено %v", got)
+	sess := start(t)
+
+	if err := sess.Notify("notifications/cancelled", map[string]any{
+		"requestId": 999,
+		"reason":    "тест",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Если бы сервер ответил на уведомление, лишнее сообщение попало бы
+	// в поток и следующий запрос получил бы чужой идентификатор.
+	if _, _, err := sess.Request("ping", map[string]any{}); err != nil {
+		t.Fatalf("после уведомления сессия должна работать как обычно: %v", err)
 	}
 }
 
@@ -127,5 +168,5 @@ func TestDuplicateRegistrationPanics(t *testing.T) {
 		}
 	}()
 	s := newTestServer()
-	s.Register(Tool{Name: "echo"})
+	s.Register(mcp.Tool{Name: "echo"})
 }

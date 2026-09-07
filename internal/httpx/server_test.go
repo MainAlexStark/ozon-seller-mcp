@@ -276,6 +276,8 @@ func TestNotificationGets202(t *testing.T) {
 	req, _ := http.NewRequest(http.MethodPost, front.URL+"/mcp",
 		strings.NewReader(`{"jsonrpc":"2.0","method":"notifications/initialized"}`))
 	req.Header.Set("Authorization", "Bearer "+readToken)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -288,13 +290,19 @@ func TestNotificationGets202(t *testing.T) {
 	}
 }
 
-func TestSSEFallbackForClientsThatOnlyAcceptStream(t *testing.T) {
+func TestAcceptMustNameBothFormats(t *testing.T) {
+	// Спецификация требует от клиента готовности принять оба формата.
+	// Прежняя реализация была снисходительнее и отвечала потоком
+	// событий тому, кто просил только его; SDK такие запросы отклоняет.
+	// Для автоматизации это значит: заголовки обязательны — см.
+	// docs/REMOTE.md.
 	front, closeFn := testServer(t, func(w http.ResponseWriter, r *http.Request) {})
 	defer closeFn()
 
 	req, _ := http.NewRequest(http.MethodPost, front.URL+"/mcp",
 		strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
 	req.Header.Set("Authorization", "Bearer "+readToken)
+	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "text/event-stream")
 
 	resp, err := http.DefaultClient.Do(req)
@@ -303,13 +311,35 @@ func TestSSEFallbackForClientsThatOnlyAcceptStream(t *testing.T) {
 	}
 	defer resp.Body.Close()
 
-	if ct := resp.Header.Get("Content-Type"); !strings.Contains(ct, "text/event-stream") {
-		t.Fatalf("ожидался поток событий, получен Content-Type %q", ct)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("неполный Accept должен отклоняться, получен %d", resp.StatusCode)
 	}
+}
 
-	sse, _ := io.ReadAll(resp.Body)
-	if !strings.HasPrefix(string(sse), "event: message\ndata: ") {
-		t.Errorf("тело не похоже на SSE: %q", sse)
+func TestHostFromReverseProxyIsAccepted(t *testing.T) {
+	// Штатная схема развёртывания: Caddy на 443 и сервер на localhost.
+	// Запрос приходит на петлевой адрес с внешним Host — встроенная
+	// в SDK защита от DNS rebinding отклонила бы его, и сервер за
+	// прокси перестал бы работать целиком.
+	front, closeFn := testServer(t, func(w http.ResponseWriter, r *http.Request) {})
+	defer closeFn()
+
+	req, _ := http.NewRequest(http.MethodPost, front.URL+"/mcp",
+		strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
+	req.Header.Set("Authorization", "Bearer "+readToken)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	req.Host = "ozon-mcp.example.com"
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("запрос из-за обратного прокси должен проходить, получен %d: %s", resp.StatusCode, body)
 	}
 }
 
