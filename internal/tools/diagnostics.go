@@ -49,9 +49,20 @@ func probes() []probe {
 			"limit": 1,
 		}},
 		{"ozon_fbo_stocks", ozon.PathStockOnWarehouses, obj{"limit": 1, "offset": 0, "warehouse_type": "ALL"}},
-		{"ozon_supply_orders_list", ozon.PathSupplyOrderList, obj{"limit": 1}},
+		// Тело собирается тем же кодом, что и у инструмента: у этого
+		// метода обязательны и сортировка, и непустой список статусов,
+		// и проверять стоит ровно то, что уходит в бою.
+		{"ozon_supply_orders_list", ozon.PathSupplyOrderList, withSupplyFilter(withLimit(obj{}, 1))},
 		{"ozon_supply_orders_counters", ozon.PathSupplyOrderCounters, obj{}},
 		{"ozon_fbo_clusters", ozon.PathClusterList, obj{}},
+
+		// Методы с обязательными полями, о которых легко забыть:
+		// у отзывов limit не меньше 20, у начислений — один день,
+		// а не период.
+		{"ozon_reviews_list", ozon.PathReviewList, obj{"limit": minReviewsLimit}},
+		{"ozon_finance_by_day", ozon.PathFinanceAccrualByDay, obj{
+			"date": time.Now().AddDate(0, 0, -1).Format("2006-01-02"),
+		}},
 	}
 }
 

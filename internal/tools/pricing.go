@@ -51,10 +51,46 @@ func (r *Registry) RegisterPricing() {
 	})
 
 	r.Add(Spec{
-		Name:   "ozon_stocks_by_warehouse",
-		Path:   ozon.PathStocksByWarehouse,
-		Desc:   "Остатки FBS в разрезе складов.",
-		Schema: schema(obj{"sku": arr(obj{"type": "integer"}, "Список SKU")}, "sku"),
+		Name: "ozon_stocks_by_warehouse",
+		Path: ozon.PathStocksByWarehouse,
+		Desc: "Остатки FBS в разрезе складов. Нужен список SKU или артикулов: " +
+			"по всему каталогу сразу метод не отвечает.",
+		Schema: schema(obj{
+			"sku":      arr(obj{"type": "string"}, "Список SKU"),
+			"offer_id": arr(obj{"type": "string"}, "Артикулы продавца — альтернатива sku"),
+			"limit":    obj{"type": "integer", "default": 100, "maximum": 1000},
+			"cursor":   str("Курсор постраничного обхода"),
+		}),
+		Build: func(a map[string]any) (any, error) {
+			if a == nil {
+				a = map[string]any{}
+			}
+
+			// SKU приезжают числами из предыдущих ответов, а метод ждёт
+			// строки — приводим, как и в остальных местах.
+			for _, field := range []string{"sku", "offer_id"} {
+				raw, ok := a[field]
+				if !ok || raw == nil {
+					continue
+				}
+				list, err := stringList(raw)
+				if err != nil {
+					return nil, fmt.Errorf("%s: %w", field, err)
+				}
+				a[field] = list
+			}
+
+			// Без выборки Ozon отвечает ошибкой про limit, хотя дело
+			// не в нём: метод просто не умеет отдавать всё подряд.
+			if a["sku"] == nil && a["offer_id"] == nil {
+				return nil, fmt.Errorf("нужен список sku или offer_id: остатки по всему каталогу " +
+					"этот метод не отдаёт. Идентификаторы можно взять из ozon_product_list")
+			}
+
+			// limit обязателен, и его отсутствие выглядит как ошибка
+			// формы запроса, а не как «вы не указали лимит».
+			return clampLimit(a, 1, 1000), nil
+		},
 	})
 
 	// --- Запись: цены со страховкой ---

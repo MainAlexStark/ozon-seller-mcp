@@ -168,7 +168,7 @@ Ozon отключает старые версии методов по распи
 - `ozon_api_selftest` прогоняет по одному минимальному запросу к каждому read-методу и показывает, какие отвечают, а какие нет;
 - на HTTP 404 сервер сам подсказывает, что версия, вероятно, отключена.
 
-Актуальные на сентябрь 2026 переезды уже применены: `/v5/product/info/prices`, `/v4/product/info/stocks`, `/v3/product/list`, `/v4/product/info/attributes`, `/v3/product/info/list`, `/v2/product/pictures/info`. Отключённый `/v3/finance/transaction/list` заменён тремя методами `/v1/finance/accrual/*` — у них окно запроса ограничено месяцем, и сервер проверяет это до отправки.
+Актуальные на сентябрь 2026 переезды уже применены: `/v5/product/info/prices`, `/v4/product/info/stocks`, `/v3/product/list`, `/v4/product/info/attributes`, `/v3/product/info/list`, `/v2/product/pictures/info`. Отключённый `/v3/finance/transaction/list` заменён тремя методами `/v1/finance/accrual/*`, и они устроены иначе: периода у них нет вовсе — начисления отдаются за один день или по конкретным отправлениям.
 
 В FBO переезды прошли неравномерно: список отправлений уехал на `/v3/posting/fbo/list` (старый отключён 31.08.2026), а получение одного отправления осталось на `/v2/posting/fbo/get`. Поставки — на `/v3/supply-order/*`, остатки на складах Ozon — на `/v2/analytics/stock_on_warehouses`. Все они проверяются `ozon_api_selftest`: если ваш кабинет отвечает по другим версиям, это видно с первого вызова.
 

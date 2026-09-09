@@ -196,28 +196,25 @@ func TestPriceGuardAllowsNormalChange(t *testing.T) {
 	}
 }
 
-func TestFinancePeriodLimitCheckedLocally(t *testing.T) {
-	var reached bool
-	_, server, closeFn := fakeOzon(t, ModeReadOnly, func(w http.ResponseWriter, r *http.Request) {
-		reached = true
-		_, _ = w.Write([]byte(`{"result":{}}`))
-	})
+func TestFinanceByDayIgnoresPeriodArguments(t *testing.T) {
+	// Раньше инструмент принимал период и сам проверял, что тот не
+	// длиннее месяца. Оказалось, метод устроен иначе: он отдаёт
+	// начисления за один день, а на диапазон отвечает ошибкой про
+	// длину строки. Проверка периода отсюда ушла — вместе с полями,
+	// которых у метода нет.
+	var body map[string]any
+	_, server, closeFn := fakeOzon(t, ModeReadOnly, captureBody(t, &body))
 	defer closeFn()
 
-	// Три месяца при лимите в один.
-	body, isErr := callTool(t, server, "ozon_finance_by_day", map[string]any{
+	if _, isErr := callTool(t, server, "ozon_finance_by_day", map[string]any{
 		"date_from": "2026-01-01",
 		"date_to":   "2026-04-01",
-	})
+	}); isErr {
+		t.Fatal("лишние поля не должны ломать вызов")
+	}
 
-	if !isErr {
-		t.Fatal("период больше месяца должен отклоняться до запроса")
-	}
-	if reached {
-		t.Error("запрос не должен был уйти в Ozon")
-	}
-	if !strings.Contains(body, "месяц") {
-		t.Errorf("сообщение должно объяснять ограничение периода: %s", body)
+	if body["date"] == nil {
+		t.Errorf("день обязателен и должен достраиваться: %v", body)
 	}
 }
 

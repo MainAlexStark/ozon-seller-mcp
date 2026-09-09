@@ -1,6 +1,10 @@
 package tools
 
-import "time"
+import (
+	"strconv"
+	"strings"
+	"time"
+)
 
 // Значения по умолчанию для тел запросов.
 //
@@ -55,6 +59,48 @@ func withLimit(a map[string]any, n int) map[string]any {
 		a["limit"] = n
 	}
 	return a
+}
+
+// clampLimit держит limit в границах, которые принимает метод.
+//
+// Границы у Ozon разные и в описании инструмента не всегда очевидны.
+// Отказ на «покажи пару отзывов» — плохой ответ на разумную просьбу,
+// поэтому значение приводится к ближайшей границе.
+func clampLimit(a map[string]any, min, max int) map[string]any {
+	if a == nil {
+		a = map[string]any{}
+	}
+
+	limit, ok := toInt(a["limit"])
+	switch {
+	case !ok:
+		limit = min
+	case limit < min:
+		limit = min
+	case limit > max:
+		limit = max
+	}
+	a["limit"] = limit
+	return a
+}
+
+// toInt приводит число из JSON к int: любое число приезжает как
+// float64, но модель может прислать и строку.
+func toInt(v any) (int, bool) {
+	switch n := v.(type) {
+	case float64:
+		return int(n), true
+	case int:
+		return n, true
+	case string:
+		parsed, err := strconv.Atoi(strings.TrimSpace(n))
+		if err != nil {
+			return 0, false
+		}
+		return parsed, true
+	default:
+		return 0, false
+	}
 }
 
 // withRecentPeriod достраивает filter.since/filter.to за последние

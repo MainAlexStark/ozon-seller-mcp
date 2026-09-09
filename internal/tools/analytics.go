@@ -48,35 +48,65 @@ func (r *Registry) RegisterAnalytics() {
 
 	// --- Финансы ---
 	//
-	// /v3/finance/transaction/list отключён в 2026 году. Три метода
-	// ниже — его замена, и у них жёсткое ограничение: окно запроса
-	// не больше месяца. Поэтому здесь стоит собственная проверка,
-	// иначе модель регулярно будет получать невнятную ошибку.
+	// /v3/finance/transaction/list отключён в 2026 году, и замена
+	// устроена иначе, чем он: не «выгрузка за период», а два узких
+	// метода — начисления за один день и начисления по конкретным
+	// отправлениям. Просить у них диапазон дат бессмысленно: такого
+	// параметра там просто нет.
 
 	r.Add(Spec{
 		Name: "ozon_finance_by_day",
 		Path: ozon.PathFinanceAccrualByDay,
-		Desc: "Начисления по дням: сводка выплат, комиссий и удержаний. " +
-			"Пришёл на смену отключённому /v3/finance/transaction/list. Период — не больше месяца за запрос.",
+		Desc: "Начисления за один день: выплаты, комиссии, удержания. " +
+			"Именно за день, а не за период: чтобы собрать месяц, метод вызывают по дням. " +
+			"Без даты берётся вчерашний день — сегодняшние начисления ещё неполные.",
 		Schema: schema(obj{
-			"date_from": str("Начало периода, YYYY-MM-DD"),
-			"date_to":   str("Конец периода, YYYY-MM-DD (не более месяца от date_from)"),
-		}, "date_from", "date_to"),
-		Build: func(a map[string]any) (any, error) { return a, checkPeriod(a, 31) },
+			"date":    str("День, YYYY-MM-DD"),
+			"last_id": str("Курсор постраничного обхода из предыдущего ответа"),
+		}),
+		Build: func(a map[string]any) (any, error) {
+			day, _ := a["date"].(string)
+			if day == "" {
+				day = time.Now().AddDate(0, 0, -1).Format("2006-01-02")
+			}
+			if err := checkDay(day); err != nil {
+				return nil, err
+			}
+
+			// Тело собираем заново, а не дополняем аргументы: у метода
+			// ровно два поля, и лишнее в нём — повод для отказа,
+			// а не для снисходительности.
+			out := map[string]any{"date": day}
+			if cursor, _ := a["last_id"].(string); cursor != "" {
+				out["last_id"] = cursor
+			}
+			return out, nil
+		},
 	})
 
 	r.Add(Spec{
 		Name: "ozon_finance_postings",
 		Path: ozon.PathFinanceAccrualPostings,
-		Desc: "Начисления в разрезе отправлений: что именно удержано по каждому заказу. " +
-			"Здесь видно реальную экономику конкретной продажи. Период — не больше месяца.",
+		Desc: "Начисления по конкретным отправлениям: что именно удержано по каждому заказу. " +
+			"Здесь видно реальную экономику продажи. Номера отправлений берите из " +
+			"ozon_postings_list или ozon_fbo_postings_list — по периоду этот метод не ищет.",
 		Schema: schema(obj{
-			"date_from": str("Начало периода, YYYY-MM-DD"),
-			"date_to":   str("Конец периода, YYYY-MM-DD (не более месяца от date_from)"),
-			"page":      obj{"type": "integer", "default": 1},
-			"page_size": obj{"type": "integer", "default": 100},
-		}, "date_from", "date_to"),
-		Build: func(a map[string]any) (any, error) { return a, checkPeriod(a, 31) },
+			"posting_numbers": arr(obj{"type": "string"}, "Номера отправлений, до 200 за раз"),
+		}, "posting_numbers"),
+		Build: func(a map[string]any) (any, error) {
+			numbers, err := stringList(a["posting_numbers"])
+			if err != nil {
+				return nil, fmt.Errorf("posting_numbers: %w", err)
+			}
+			// Ozon отвечает на превышение невнятной ошибкой валидации,
+			// поэтому считаем сами.
+			if len(numbers) > maxPostingsPerAccrualRequest {
+				return nil, fmt.Errorf(
+					"за один вызов принимается не больше %d отправлений, передано %d — разбейте на несколько вызовов",
+					maxPostingsPerAccrualRequest, len(numbers))
+			}
+			return map[string]any{"posting_numbers": numbers}, nil
+		},
 	})
 
 	r.Add(Spec{
@@ -92,7 +122,8 @@ func (r *Registry) RegisterAnalytics() {
 		Name: "ozon_postings_list",
 		Path: ozon.PathPostingFBSList,
 		Desc: "Отправления FBS за период: новые заказы, статусы, дедлайны отгрузки. " +
-			"Вход для планирования того, что нужно произвести и отгрузить.",
+			"Вход для планирования того, что нужно произвести и отгрузить. " +
+			"Если период не задан, берутся последние 7 дней.",
 		Schema: schema(obj{
 			"filter": schema(obj{
 				"since":  str("Начало периода, RFC3339"),
@@ -104,10 +135,10 @@ func (r *Registry) RegisterAnalytics() {
 			"with":   obj{"type": "object", "description": "Что включить в ответ: analytics_data, financial_data"},
 		}),
 		Build: func(a map[string]any) (any, error) {
-			if _, ok := a["limit"]; !ok {
-				a["limit"] = 50
-			}
-			return a, nil
+			// Период обязателен: без него Ozon отвечает «processed_at_to
+			// must be set», а спрашивают обычно просто «что там с
+			// заказами» — без дат вообще.
+			return withLimit(withRecentPeriod(a, 7), 50), nil
 		},
 	})
 
@@ -124,14 +155,41 @@ func (r *Registry) RegisterAnalytics() {
 	r.Add(Spec{
 		Name: "ozon_reviews_list",
 		Path: ozon.PathReviewList,
-		Desc: "Отзывы на товары. Полезно, чтобы понять, что покупатели пишут про размер, качество печати и упаковку.",
+		Desc: "Отзывы на товары. Полезно, чтобы понять, что покупатели пишут про размер, качество печати и упаковку. " +
+			"Меньше 20 отзывов за раз Ozon не отдаёт, поэтому меньший limit поднимается до 20.",
 		Schema: schema(obj{
-			"limit":    obj{"type": "integer", "default": 20},
+			"limit":    obj{"type": "integer", "default": minReviewsLimit, "minimum": minReviewsLimit, "maximum": maxReviewsLimit},
 			"status":   obj{"type": "string", "enum": []string{"ALL", "UNPROCESSED", "PROCESSED"}},
 			"sort_dir": obj{"type": "string", "enum": []string{"ASC", "DESC"}},
 			"last_id":  str("Курсор постраничного обхода"),
 		}),
+		Build: func(a map[string]any) (any, error) {
+			// limit обязателен и принимается только в диапазоне
+			// [20, 100]. Просьба «покажи пару отзывов» выглядит
+			// естественно и приводила к отказу — приводим к границе
+			// вместо ошибки: лишние отзывы не мешают, отказ мешает.
+			return clampLimit(a, minReviewsLimit, maxReviewsLimit), nil
+		},
 	})
+}
+
+// Границы, которые Ozon проверяет сам, но объясняет плохо.
+const (
+	minReviewsLimit = 20
+	maxReviewsLimit = 100
+
+	maxPostingsPerAccrualRequest = 200
+)
+
+// checkDay проверяет формат дня до обращения к API: Ozon отвечает на
+// неверный формат сообщением про «10 runes», по которому не догадаться,
+// что речь про YYYY-MM-DD.
+func checkDay(v any) error {
+	day, _ := v.(string)
+	if _, err := time.Parse("2006-01-02", day); err != nil {
+		return fmt.Errorf("date=%q: ожидается один день в формате YYYY-MM-DD", day)
+	}
+	return nil
 }
 
 // checkPeriod проверяет даты периода до обращения к API.

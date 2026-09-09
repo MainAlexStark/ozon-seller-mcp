@@ -2,6 +2,7 @@ package tools
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/MainAlexStark/ozon-seller-mcp/ozon"
 )
@@ -95,10 +96,11 @@ func (r *Registry) RegisterFBO() {
 		Path: ozon.PathSupplyOrderList,
 		Desc: "Заявки на поставку: что вы уже везёте или собираетесь везти на склады Ozon. " +
 			"Возвращает идентификаторы заявок для ozon_supply_order_get. " +
-			"Список статусов, по которым можно фильтровать, показывает ozon_supply_orders_counters.",
+			"Без фильтра показывает заявки во всех статусах.",
 		Schema: schema(obj{
 			"filter": schema(obj{
-				"states":                arr(obj{"type": "string"}, "Статусы заявок, например ORDER_STATE_DATA_FILLING"),
+				"states": arr(obj{"type": "string", "enum": supplyOrderStates},
+					"Статусы заявок. Пусто — все статусы"),
 				"dropoff_warehouse_ids": arr(obj{"type": "string"}, "Склады отгрузки"),
 				"order_number_search":   str("Поиск по номеру заявки"),
 				"timeslot_from_range": schema(obj{
@@ -109,11 +111,11 @@ func (r *Registry) RegisterFBO() {
 			}),
 			"limit":    obj{"type": "integer", "default": 100, "maximum": 1000},
 			"last_id":  str("Курсор постраничного обхода"),
-			"sort_by":  str("Поле сортировки, например ORDER_CREATION"),
+			"sort_by":  obj{"type": "string", "default": defaultSupplySortBy, "description": "Поле сортировки"},
 			"sort_dir": obj{"type": "string", "enum": []string{"ASC", "DESC"}},
 		}),
 		Build: func(a map[string]any) (any, error) {
-			return withLimit(a, 100), nil
+			return withSupplyFilter(withLimit(a, 100)), nil
 		},
 	})
 
@@ -183,6 +185,83 @@ func (r *Registry) RegisterFBO() {
 			"и к какому кластеру относится склад из остатков.",
 		Schema: schema(obj{}),
 	})
+}
+
+// defaultSupplySortBy — сортировка по умолчанию. Поле обязательное:
+// без него Ozon отвечает «invalid SortBy: value must not be in list [0]»,
+// то есть отказывается от значения по умолчанию своего же протокола.
+const defaultSupplySortBy = "ORDER_CREATION"
+
+// supplyOrderStates — статусы заявок на поставку.
+//
+// Осторожно: ozon_supply_orders_counters возвращает те же статусы
+// с префиксом ORDER_STATE_, а фильтр списка принимает их без префикса
+// и молча выбрасывает всё, что не узнал, — превращая непустой фильтр
+// в пустой и отвечая «States: value must contain at least 1 item».
+// Поэтому префикс здесь срезается, а не передаётся как есть.
+var supplyOrderStates = []string{
+	"DATA_FILLING",
+	"READY_TO_SUPPLY",
+	"ACCEPTED_AT_SUPPLY_WAREHOUSE",
+	"IN_TRANSIT",
+	"ACCEPTANCE_AT_STORAGE_WAREHOUSE",
+	"REPORTS_CONFIRMATION_AWAITING",
+	"REPORT_REJECTED",
+	"COMPLETED",
+	"REJECTED_AT_SUPPLY_WAREHOUSE",
+	"CANCELLED",
+}
+
+// withSupplyFilter достраивает обязательные поля списка заявок.
+//
+// Ozon требует и сортировку, и непустой список статусов — при том что
+// вопрос «какие у меня поставки» никаких фильтров не подразумевает.
+// Без этого метод отвечал ошибкой на самый естественный вызов.
+func withSupplyFilter(a map[string]any) map[string]any {
+	if a == nil {
+		a = map[string]any{}
+	}
+
+	if v, ok := a["sort_by"]; !ok || v == nil || v == "" {
+		a["sort_by"] = defaultSupplySortBy
+	}
+
+	filter, _ := a["filter"].(map[string]any)
+	if filter == nil {
+		filter = map[string]any{}
+	}
+
+	states := normalizeSupplyStates(filter["states"])
+	if len(states) == 0 {
+		states = append([]string(nil), supplyOrderStates...)
+	}
+	filter["states"] = states
+
+	a["filter"] = filter
+	return a
+}
+
+// normalizeSupplyStates приводит статусы к тому виду, который понимает
+// фильтр: без префикса ORDER_STATE_ и без пустых значений.
+func normalizeSupplyStates(v any) []string {
+	items, ok := v.([]any)
+	if !ok {
+		return nil
+	}
+
+	var out []string
+	for _, item := range items {
+		state, ok := item.(string)
+		if !ok {
+			continue
+		}
+		state = strings.TrimSpace(state)
+		state = strings.TrimPrefix(state, "ORDER_STATE_")
+		if state != "" && state != "UNSPECIFIED" {
+			out = append(out, state)
+		}
+	}
+	return out
 }
 
 // stringList приводит список идентификаторов к строкам.
