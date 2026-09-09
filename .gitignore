@@ -9,3 +9,4 @@ dist/
 .DS_Store
 go.work
 go.work.sum
+./deploy/ozon-seller-mcp.env
