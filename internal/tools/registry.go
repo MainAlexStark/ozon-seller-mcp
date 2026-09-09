@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -43,6 +44,12 @@ type Spec struct {
 	// Build превращает аргументы инструмента в тело запроса к Ozon.
 	// Если nil, аргументы уходят как есть.
 	Build func(args map[string]any) (any, error)
+
+	// Hint объясняет отказ Ozon там, где общий разбор ошибок
+	// промахивается: один и тот же 400 у разных методов означает
+	// разное, и совет не из того класса стоит человеку вечера.
+	// Пустая строка — «объяснить нечем, работает общий разбор».
+	Hint func(args map[string]any, err error) string
 }
 
 // Add регистрирует инструмент, описанный спецификацией.
@@ -75,7 +82,17 @@ func (r *Registry) Add(s Spec) {
 				payload = built
 			}
 
-			return r.call(ctx, s.Path, payload)
+			raw, err := r.client.Call(ctx, s.Path, payload)
+			if err != nil {
+				if s.Hint != nil {
+					if hint := s.Hint(args, err); hint != "" {
+						return "", fmt.Errorf("%w\n\n%s", err, hint)
+					}
+				}
+				return "", decorate(err)
+			}
+
+			return r.format(ctx, raw), nil
 		},
 	})
 }
@@ -87,26 +104,36 @@ func (r *Registry) AddCustom(t mcp.Tool) {
 	r.server.Register(t)
 }
 
-// call выполняет запрос и приводит ответ к виду, удобному для чтения
-// моделью: отформатированный JSON, обрезанный по размеру, а ошибка —
-// с подсказкой, что делать дальше.
-func (r *Registry) call(ctx context.Context, path string, payload any) (string, error) {
-	raw, err := r.client.Call(ctx, path, payload)
-	if err != nil {
-		return "", decorate(err)
-	}
-	return r.format(ctx, raw), nil
+// prettyLimit — до какого размера ответ печатается с отступами.
+//
+// Отступы стоят дороже, чем кажется: на живом ответе начислений за день
+// они раздули 31 КБ до 78 КБ, то есть больше чем вдвое, и ровно на этом
+// ответ перестал доезжать до модели. Пока ответ короткий, читаемость
+// важнее — на длинном она не стоит удвоенного счёта.
+const prettyLimit = 8_000
+
+// format приводит ответ к виду, удобному для чтения моделью, и
+// обрезает по лимиту запроса.
+func (r *Registry) format(ctx context.Context, raw json.RawMessage) string {
+	return r.safetyFor(ctx).TrimResponse(formatJSON(raw))
 }
 
-// format красиво печатает JSON и обрезает по лимиту запроса.
-func (r *Registry) format(ctx context.Context, raw json.RawMessage) string {
-	var pretty json.RawMessage
-	if out, err := json.MarshalIndent(json.RawMessage(raw), "", "  "); err == nil {
-		pretty = out
-	} else {
-		pretty = raw
+// formatJSON печатает JSON: короткий — с отступами, длинный — плотно.
+func formatJSON(raw json.RawMessage) string {
+	body := string(raw)
+
+	var compact bytes.Buffer
+	if err := json.Compact(&compact, raw); err == nil {
+		body = compact.String()
 	}
-	return r.safetyFor(ctx).TrimResponse(string(pretty))
+
+	if len(body) <= prettyLimit {
+		if pretty, err := json.MarshalIndent(json.RawMessage(raw), "", "  "); err == nil {
+			body = string(pretty)
+		}
+	}
+
+	return body
 }
 
 // decorate добавляет к ошибке человеческую подсказку.

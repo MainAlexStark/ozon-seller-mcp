@@ -29,6 +29,7 @@ func fakeOzon(t *testing.T, mode Mode, handler http.HandlerFunc) (*Registry, *mc
 	reg.RegisterCatalog()
 	reg.RegisterPricing()
 	reg.RegisterAnalytics()
+	reg.RegisterFinance()
 	reg.RegisterFBO()
 	reg.RegisterDiagnostics()
 

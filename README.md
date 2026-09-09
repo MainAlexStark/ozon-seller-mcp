@@ -1,6 +1,6 @@
 # ozon-seller-mcp
 
-MCP-сервер для [Ozon Seller API](https://docs.ozon.ru/api/seller). Даёт Claude доступ к кабинету продавца: каталог, цены, остатки, аналитика, финансы, отправления FBS и поставки FBO — 38 инструментов.
+MCP-сервер для [Ozon Seller API](https://docs.ozon.ru/api/seller). Даёт Claude доступ к кабинету продавца: каталог, цены, остатки, аналитика, финансы, отправления FBS и поставки FBO — 39 инструментов.
 
 Внутри лежит и самостоятельный Go-клиент Seller API (`ozon/`) — его можно использовать отдельно от MCP.
 
@@ -105,7 +105,7 @@ ozon-seller-mcp --grants
 | `OZON_ALLOWED_ORIGINS` | — | сеть: разрешённые `Origin` через запятую |
 | `OZON_MAX_PRICE_DELTA` | `30` | Порог изменения цены в процентах |
 | `OZON_MAX_ITEMS_PER_WRITE` | `100` | Позиций за один вызов записи |
-| `OZON_MAX_RESPONSE_BYTES` | `120000` | Потолок размера ответа инструмента |
+| `OZON_MAX_RESPONSE_BYTES` | `40000` | Потолок размера ответа инструмента |
 | `OZON_PROXY` | — | Прокси **только** для трафика в Ozon: `socks5://…`, `http://…` |
 | `OZON_BASE_URL` | боевой хост | Подмена для тестов |
 
@@ -130,7 +130,7 @@ ozon-seller-mcp --grants
 
 Если текущие цены прочитать не удалось, запись не блокируется — иначе временный сбой парализовал бы работу, — но в ответ добавляется предупреждение, что проверка не сработала.
 
-**3. Ограничение размера ответа.** Ответ на несколько мегабайт не «просто длинный»: он вытесняет из контекста задачу, ради которой вызывался. Такие ответы обрезаются с подсказкой, как сузить выборку.
+**3. Ограничение размера ответа.** Ответ на несколько мегабайт не «просто длинный»: клиент режет результат инструмента по числу токенов, и такой ответ до модели не доезжает вовсе — она видит отказ, не понимает причины и повторяет вызов. Поэтому длинные ответы обрезаются здесь: JSON — по элементам массива, так что наружу выходит валидный документ с отметкой о том, сколько осталось за кадром, и подсказкой, как сузить выборку.
 
 ## Если Ozon отвечает таймаутом
 
@@ -152,7 +152,7 @@ ozon-seller-mcp --grants
 | Цены и остатки | `prices_info`, `stocks_info`, `stocks_by_warehouse` |
 | Цены и остатки (запись) | `prices_update`, `stocks_update` |
 | Аналитика | `analytics_data`, `analytics_stocks` |
-| Финансы | `finance_by_day`, `finance_postings`, `finance_accrual_types` |
+| Финансы | `finance_summary`, `finance_by_day`, `finance_postings`, `finance_accrual_types` |
 | Заказы FBS | `postings_list`, `posting_get`, `reviews_list` |
 | FBO: заказы и остатки | `fbo_postings_list`, `fbo_posting_get`, `fbo_stocks`, `fbo_clusters` |
 | FBO: поставки | `supply_orders_list`, `supply_order_get`, `supply_order_items`, `supply_orders_counters`, `supply_timeslots` |

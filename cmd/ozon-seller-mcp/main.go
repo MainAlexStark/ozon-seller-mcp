@@ -23,7 +23,7 @@
 //	OZON_ALLOWED_ORIGINS     сетевой режим: разрешённые Origin через запятую
 //	OZON_MAX_PRICE_DELTA     порог смены цены в процентах (30)
 //	OZON_MAX_ITEMS_PER_WRITE позиций за один вызов записи (100)
-//	OZON_MAX_RESPONSE_BYTES  потолок размера ответа (120000)
+//	OZON_MAX_RESPONSE_BYTES  потолок размера ответа (40000)
 //	OZON_BASE_URL            подмена хоста Ozon для тестов
 package main
 
@@ -118,6 +118,7 @@ func main() {
 	reg.RegisterCatalog()
 	reg.RegisterPricing()
 	reg.RegisterAnalytics()
+	reg.RegisterFinance()
 	reg.RegisterFBO()
 	reg.RegisterDiagnostics()
 

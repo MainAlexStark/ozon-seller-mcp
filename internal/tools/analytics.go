@@ -2,12 +2,14 @@ package tools
 
 import (
 	"fmt"
+	"net/http"
+	"strings"
 	"time"
 
 	"github.com/MainAlexStark/ozon-seller-mcp/ozon"
 )
 
-// RegisterAnalytics добавляет аналитику, финансы и отправления.
+// RegisterAnalytics добавляет аналитику и отправления.
 func (r *Registry) RegisterAnalytics() {
 	r.Add(Spec{
 		Name: "ozon_analytics_data",
@@ -31,6 +33,7 @@ func (r *Registry) RegisterAnalytics() {
 			}
 			return a, checkPeriod(a, 0)
 		},
+		Hint: staleAnalyticsHint,
 	})
 
 	r.Add(Spec{
@@ -46,75 +49,9 @@ func (r *Registry) RegisterAnalytics() {
 		}),
 	})
 
-	// --- Финансы ---
-	//
-	// /v3/finance/transaction/list отключён в 2026 году, и замена
-	// устроена иначе, чем он: не «выгрузка за период», а два узких
-	// метода — начисления за один день и начисления по конкретным
-	// отправлениям. Просить у них диапазон дат бессмысленно: такого
-	// параметра там просто нет.
-
-	r.Add(Spec{
-		Name: "ozon_finance_by_day",
-		Path: ozon.PathFinanceAccrualByDay,
-		Desc: "Начисления за один день: выплаты, комиссии, удержания. " +
-			"Именно за день, а не за период: чтобы собрать месяц, метод вызывают по дням. " +
-			"Без даты берётся вчерашний день — сегодняшние начисления ещё неполные.",
-		Schema: schema(obj{
-			"date":    str("День, YYYY-MM-DD"),
-			"last_id": str("Курсор постраничного обхода из предыдущего ответа"),
-		}),
-		Build: func(a map[string]any) (any, error) {
-			day, _ := a["date"].(string)
-			if day == "" {
-				day = time.Now().AddDate(0, 0, -1).Format("2006-01-02")
-			}
-			if err := checkDay(day); err != nil {
-				return nil, err
-			}
-
-			// Тело собираем заново, а не дополняем аргументы: у метода
-			// ровно два поля, и лишнее в нём — повод для отказа,
-			// а не для снисходительности.
-			out := map[string]any{"date": day}
-			if cursor, _ := a["last_id"].(string); cursor != "" {
-				out["last_id"] = cursor
-			}
-			return out, nil
-		},
-	})
-
-	r.Add(Spec{
-		Name: "ozon_finance_postings",
-		Path: ozon.PathFinanceAccrualPostings,
-		Desc: "Начисления по конкретным отправлениям: что именно удержано по каждому заказу. " +
-			"Здесь видно реальную экономику продажи. Номера отправлений берите из " +
-			"ozon_postings_list или ozon_fbo_postings_list — по периоду этот метод не ищет.",
-		Schema: schema(obj{
-			"posting_numbers": arr(obj{"type": "string"}, "Номера отправлений, до 200 за раз"),
-		}, "posting_numbers"),
-		Build: func(a map[string]any) (any, error) {
-			numbers, err := stringList(a["posting_numbers"])
-			if err != nil {
-				return nil, fmt.Errorf("posting_numbers: %w", err)
-			}
-			// Ozon отвечает на превышение невнятной ошибкой валидации,
-			// поэтому считаем сами.
-			if len(numbers) > maxPostingsPerAccrualRequest {
-				return nil, fmt.Errorf(
-					"за один вызов принимается не больше %d отправлений, передано %d — разбейте на несколько вызовов",
-					maxPostingsPerAccrualRequest, len(numbers))
-			}
-			return map[string]any{"posting_numbers": numbers}, nil
-		},
-	})
-
-	r.Add(Spec{
-		Name:   "ozon_finance_accrual_types",
-		Path:   ozon.PathFinanceAccrualTypes,
-		Desc:   "Справочник видов начислений — расшифровка кодов из финансовых отчётов.",
-		Schema: schema(obj{}),
-	})
+	// Финансовые инструменты живут в finance.go: там же лежит свод,
+	// без которого вопрос «сколько вышло за месяц» превращается
+	// в тридцать вызовов.
 
 	// --- Отправления ---
 
@@ -177,9 +114,43 @@ func (r *Registry) RegisterAnalytics() {
 const (
 	minReviewsLimit = 20
 	maxReviewsLimit = 100
-
-	maxPostingsPerAccrualRequest = 200
 )
+
+// staleAnalyticsHint объясняет самый обманчивый отказ аналитики.
+//
+// На период старше окна хранения Ozon отвечает «date_to must be greater
+// than date_from» — то есть жалуется на порядок дат, который в запросе
+// в полном порядке. Модель верит сообщению, начинает переставлять даты
+// местами, каждый раз получает тот же отказ и в конце концов уходит
+// собирать период по дням через начисления. Так вопрос про выручку за
+// прошлый год превращался в тридцать вызовов вместо ответа «этих данных
+// в аналитике уже нет».
+func staleAnalyticsHint(a map[string]any, err error) string {
+	var apiErr *ozon.APIError
+	if !asAPI(err, &apiErr) || apiErr.StatusCode != http.StatusBadRequest {
+		return ""
+	}
+	if !strings.Contains(strings.ToLower(apiErr.Message), "date_to must be greater than date_from") {
+		return ""
+	}
+
+	// Если даты и правда перепутаны, сообщение Ozon верное — и подменять
+	// его догадкой нельзя.
+	if checkPeriod(a, 0) != nil {
+		return ""
+	}
+
+	from, _ := a["date_from"].(string)
+	to, _ := a["date_to"].(string)
+	return fmt.Sprintf(
+		"Даты %s…%s заданы верно, и переставлять их местами не нужно: так Ozon отвечает,\n"+
+			"когда период выходит за окно хранения аналитики (примерно последние три месяца).\n"+
+			"Повторный вызов вернёт тот же отказ.\n\n"+
+			"За более ранний период считайте по деньгам, а не по витрине:\n"+
+			"    ozon_finance_summary date_from=%s date_to=%s\n"+
+			"Он отдаёт начисления — сколько начислено, удержано и вышло чистыми.",
+		from, to, from, to)
+}
 
 // checkDay проверяет формат дня до обращения к API: Ozon отвечает на
 // неверный формат сообщением про «10 runes», по которому не догадаться,
