@@ -56,6 +56,18 @@ func probes() []probe {
 		{"ozon_supply_orders_counters", ozon.PathSupplyOrderCounters, obj{}},
 		{"ozon_fbo_clusters", ozon.PathClusterList, obj{}},
 
+		// Возвраты и документы. Проверяются без фильтров: у возвратов
+		// условия фильтра взаимоисключающие, а у сертификатов
+		// постраничность обязательна.
+		{"ozon_returns_list", ozon.PathReturnsList, obj{"limit": 1}},
+		{"ozon_certification_required", ozon.PathCertificationList, obj{"page": 1, "page_size": 1}},
+		{"ozon_certificates_list", ozon.PathCertificateList, obj{"page": 1, "page_size": 1}},
+
+		// Вопросы о товаре. Отказ прав здесь — не поломка: методы
+		// открыты только продавцам с Premium Plus, и самодиагностика
+		// как раз и отвечает на вопрос, есть ли к ним доступ вообще.
+		{"ozon_questions_count", ozon.PathQuestionCount, obj{}},
+
 		// Методы с обязательными полями, о которых легко забыть:
 		// у отзывов limit не меньше 20, у начислений — один день,
 		// а не период.

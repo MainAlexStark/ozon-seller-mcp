@@ -38,6 +38,14 @@ type Spec struct {
 	// проходят через Safety.CheckWrite.
 	Write bool
 
+	// Batch сообщает, сколько позиций затрагивает вызов.
+	//
+	// Задаётся у записи, аргумент которой — список. Ограничение
+	// размера пачки придумано не ради экономии запросов: чем меньше
+	// позиций в одном вызове, тем меньше товаров затронет ошибка,
+	// которую заметят не сразу.
+	Batch func(args map[string]any) int
+
 	// Schema — JSON Schema аргументов. Модель видит именно её.
 	Schema map[string]any
 
@@ -70,6 +78,11 @@ func (r *Registry) Add(s Spec) {
 			if s.Write {
 				if err := safety.CheckWrite(s.Name); err != nil {
 					return "", err
+				}
+				if s.Batch != nil {
+					if err := safety.CheckBatchSize(s.Batch(args)); err != nil {
+						return "", err
+					}
 				}
 			}
 

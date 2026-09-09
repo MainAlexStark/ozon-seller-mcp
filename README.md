@@ -1,6 +1,6 @@
 # ozon-seller-mcp
 
-MCP-сервер для [Ozon Seller API](https://docs.ozon.ru/api/seller). Даёт Claude доступ к кабинету продавца: каталог, цены, остатки, аналитика, финансы, отправления FBS и поставки FBO — 39 инструментов.
+MCP-сервер для [Ozon Seller API](https://docs.ozon.ru/api/seller). Даёт Claude доступ к кабинету продавца: каталог, цены, остатки, аналитика, финансы, отправления FBS, поставки FBO, возвраты, вопросы покупателей, сертификаты и штрихкоды — 54 инструмента.
 
 Внутри лежит и самостоятельный Go-клиент Seller API (`ozon/`) — его можно использовать отдельно от MCP.
 
@@ -156,9 +156,16 @@ ozon-seller-mcp --grants
 | Заказы FBS | `postings_list`, `posting_get`, `reviews_list` |
 | FBO: заказы и остатки | `fbo_postings_list`, `fbo_posting_get`, `fbo_stocks`, `fbo_clusters` |
 | FBO: поставки | `supply_orders_list`, `supply_order_get`, `supply_order_items`, `supply_orders_counters`, `supply_timeslots` |
+| Возвраты | `returns_list`, `returns_dropoff_points` |
+| Вопросы о товаре | `questions_count`, `questions_list`, `question_info`, `question_answers` |
+| Вопросы о товаре (запись) | `question_answer_create`, `question_change_status` |
+| Сертификаты и штрихкоды | `certification_required`, `certificates_list`, `certificate_products` |
+| Сертификаты и штрихкоды (запись) | `certificate_bind`, `certificate_unbind`, `barcode_generate`, `barcode_bind` |
 | Диагностика | `status`, `api_selftest` |
 
 Все имена — с префиксом `ozon_`.
+
+Отзывы и вопросы о товаре Ozon открывает только продавцам с подпиской Premium Plus: без неё эти методы отвечают отказом прав, а не пустым списком. Загрузка файла сертификата остаётся в кабинете — она идёт `multipart/form-data`, а клиент отправляет JSON; всё вокруг неё (что требуется, что загружено, к чему привязано) доступно отсюда.
 
 ## Про версии методов Ozon
 

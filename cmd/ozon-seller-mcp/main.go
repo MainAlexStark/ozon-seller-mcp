@@ -120,6 +120,9 @@ func main() {
 	reg.RegisterAnalytics()
 	reg.RegisterFinance()
 	reg.RegisterFBO()
+	reg.RegisterReturns()
+	reg.RegisterQuestions()
+	reg.RegisterCertificates()
 	reg.RegisterDiagnostics()
 
 	if *check {

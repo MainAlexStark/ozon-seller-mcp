@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -61,6 +62,23 @@ func withLimit(a map[string]any, n int) map[string]any {
 	return a
 }
 
+// capLimit опускает limit до потолка метода, не трогая меньшие
+// значения и не подставляя своего.
+//
+// Отличие от clampLimit в том, что нижней границы у таких методов нет:
+// «покажи пару возвратов» — законная просьба, а вот запрос пятисот
+// с лишним записей Ozon отвергнет целиком, и в ответ придёт ошибка
+// вместо данных.
+func capLimit(a map[string]any, max int) map[string]any {
+	if a == nil {
+		return map[string]any{}
+	}
+	if n, ok := toInt(a["limit"]); ok && n > max {
+		a["limit"] = max
+	}
+	return a
+}
+
 // clampLimit держит limit в границах, которые принимает метод.
 //
 // Границы у Ozon разные и в описании инструмента не всегда очевидны.
@@ -100,6 +118,28 @@ func toInt(v any) (int, bool) {
 		return parsed, true
 	default:
 		return 0, false
+	}
+}
+
+// stringID приводит одиночный идентификатор к строке.
+//
+// Та же история, что и со списками в stringList: идентификатор вопроса
+// у Ozon — строка, но выглядит как число, и модель, увидев его
+// в предыдущем ответе, отправляет число. Ozon отвечает ошибкой типа
+// при верном значении.
+func stringID(v any) (string, error) {
+	switch id := v.(type) {
+	case string:
+		if strings.TrimSpace(id) == "" {
+			return "", fmt.Errorf("пустой идентификатор")
+		}
+		return id, nil
+	case float64:
+		return strconv.FormatInt(int64(id), 10), nil
+	case nil:
+		return "", fmt.Errorf("идентификатор не задан")
+	default:
+		return "", fmt.Errorf("идентификатор должен быть строкой или числом, получено %T", v)
 	}
 }
 

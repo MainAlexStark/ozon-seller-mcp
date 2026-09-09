@@ -49,6 +49,25 @@ func TestLimiterDoesNotBurnGroupTokensWhileWaiting(t *testing.T) {
 	}
 }
 
+// У штрихкодов единственный предел, названный в документации прямо:
+// не больше 20 вызовов в минуту. Общая группа «other» втрое шире, и
+// на ней пачка товаров упирается в 429 посреди работы.
+func TestBarcodeMethodsHaveOwnGroup(t *testing.T) {
+	if got := groupOf(PathBarcodeGenerate); got != "barcode" {
+		t.Errorf("штрихкоды товара должны жить в своей группе, получено %q", got)
+	}
+
+	// А ярлык отправления — не должен: путь тоже содержит barcode,
+	// но лимит у него общий с заказами.
+	if got := groupOf("/v2/posting/fbs/act/get-barcode"); got != "posting" {
+		t.Errorf("ярлык отправления — не штрихкод товара, получено %q", got)
+	}
+
+	if rate := NewLimiter().rates["barcode"]; rate.Burst > 20 || rate.Period != time.Minute {
+		t.Errorf("лимит штрихкодов должен быть не выше 20 в минуту, задано %d за %s", rate.Burst, rate.Period)
+	}
+}
+
 // 403 приходит и на «ключ не тот», и на «метод не входит в подписку».
 // Советы противоположные, и раньше второй случай отправлял человека
 // перевыпускать вполне рабочий ключ.

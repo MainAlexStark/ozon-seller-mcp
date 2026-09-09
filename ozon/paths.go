@@ -94,5 +94,41 @@ const (
 	PathFinanceAccrualTypes    = "/v1/finance/accrual/types"
 
 	// --- Отзывы и вопросы ---
+	//
+	// Отзывы и вопросы у Ozon разведены по разным разделам, и пути
+	// у них разной формы: у отзывов дефис (review/change-status),
+	// у вопросов — подчёркивание (question/change_status). Разница
+	// не смысловая, а историческая, но 404 из-за неё настоящий.
 	PathReviewList = "/v1/review/list"
+
+	PathQuestionList         = "/v1/question/list"
+	PathQuestionInfo         = "/v1/question/info"
+	PathQuestionCount        = "/v1/question/count"
+	PathQuestionAnswerList   = "/v1/question/answer/list"
+	PathQuestionAnswerCreate = "/v1/question/answer/create"
+	PathQuestionChangeStatus = "/v1/question/change_status"
+
+	// --- Возвраты ---
+	//
+	// /v1/returns/list — единый список для FBS и FBO. До него схемы
+	// разбирались разными методами, и сводить их приходилось руками.
+	PathReturnsList        = "/v1/returns/list"
+	PathReturnsDropoffInfo = "/v1/returns/company/fbs/info"
+
+	// --- Штрихкоды ---
+	PathBarcodeGenerate = "/v1/barcode/generate"
+	PathBarcodeAdd      = "/v1/barcode/add"
+
+	// --- Сертификаты и декларации ---
+	//
+	// Загрузка самого файла (/v1/product/certificate/create) идёт
+	// multipart/form-data, а клиент этого пакета отправляет только
+	// JSON. Поэтому загрузка остаётся ручной операцией в кабинете,
+	// а через MCP доступно всё вокруг неё: что вообще требуется,
+	// что уже загружено, к чему привязано и прошло ли проверку.
+	PathCertificationList       = "/v2/product/certification/list"
+	PathCertificateList         = "/v1/product/certificate/list"
+	PathCertificateProductsList = "/v1/product/certificate/products/list"
+	PathCertificateBind         = "/v1/product/certificate/bind"
+	PathCertificateUnbind       = "/v1/product/certificate/unbind"
 )

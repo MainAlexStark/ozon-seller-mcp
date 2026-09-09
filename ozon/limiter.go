@@ -50,7 +50,15 @@ func DefaultRates() map[string]Rate {
 		"posting":   {Burst: 60, Period: time.Minute},
 		"analytics": {Burst: 10, Period: time.Minute}, // аналитика тяжёлая, лимиты жёстче
 		"finance":   {Burst: 10, Period: time.Minute},
-		"other":     {Burst: 60, Period: time.Minute},
+
+		// Штрихкоды — единственная группа, где предел назван в
+		// документации прямо: не больше 20 вызовов в минуту. Держим
+		// ниже названного: упереться в лимит на генерации штрихкодов
+		// значит получить 429 посреди пачки товаров и не знать, каким
+		// из них штрихкод успели присвоить.
+		"barcode": {Burst: 15, Period: time.Minute},
+
+		"other": {Burst: 60, Period: time.Minute},
 
 		globalGroup: {Burst: 5, Period: time.Second},
 	}
@@ -79,6 +87,11 @@ func groupOf(path string) string {
 		return "stocks"
 	case strings.Contains(path, "/posting"):
 		return "posting"
+	// Ниже отправлений намеренно: у ярлыков отправления путь тоже
+	// содержит barcode (/v2/posting/fbs/act/get-barcode), но лимит
+	// у них общий с отправлениями, а не со штрихкодами товаров.
+	case strings.Contains(path, "/barcode"):
+		return "barcode"
 	case strings.Contains(path, "/product"):
 		return "product"
 	default:
