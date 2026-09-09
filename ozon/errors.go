@@ -48,6 +48,15 @@ func (e *APIError) Retryable() bool {
 func (e *APIError) Hint() string {
 	switch e.StatusCode {
 	case http.StatusUnauthorized, http.StatusForbidden:
+		// 403 приходит и на «ключ не тот», и на «метод не входит в вашу
+		// подписку». Советы тут противоположные, а перепутать легко:
+		// человек идёт перевыпускать рабочий ключ вместо того, чтобы
+		// посмотреть тариф. Различаем по формулировке Ozon.
+		if isSubscriptionDenied(e.Message) {
+			return "Метод недоступен на вашем тарифе — дело не в ключе. Часть методов " +
+				"(например, отзывы) Ozon открывает только с платной подпиской. " +
+				"Проверить можно в кабинете, в разделе подписок."
+		}
 		return "Ключ не принят. Проверьте OZON_CLIENT_ID и OZON_API_KEY. " +
 			"Учтите: с сентября 2026 новые ключи в кабинете выпускаются на 3 месяца — возможно, срок истёк."
 	case http.StatusNotFound:
@@ -72,6 +81,17 @@ func (e *APIError) Hint() string {
 		return "Ошибка на стороне Ozon. Клиент повторил запрос несколько раз — стоит попробовать позже."
 	}
 	return ""
+}
+
+// isSubscriptionDenied узнаёт отказ по тарифу, а не по ключу.
+func isSubscriptionDenied(msg string) bool {
+	m := strings.ToLower(msg)
+	for _, marker := range []string{"subscription", "подписк", "permissiondenied", "тариф"} {
+		if strings.Contains(m, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // isRequestValidation отличает «тело собрано неправильно» от

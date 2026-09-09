@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -274,7 +275,19 @@ func normalizeSupplyStates(v any) []string {
 func stringList(v any) ([]string, error) {
 	items, ok := v.([]any)
 	if !ok {
-		return nil, fmt.Errorf("ожидается список, получено %T", v)
+		// Список, приехавший строкой ("[\"1\",\"2\"]"), — не редкость:
+		// так бывает, когда клиент не знает схемы поля и передаёт
+		// аргумент как есть. Разбираем, вместо того чтобы отказывать.
+		if raw, isString := v.(string); isString {
+			var parsed []any
+			if err := json.Unmarshal([]byte(raw), &parsed); err == nil {
+				items = parsed
+				ok = true
+			}
+		}
+		if !ok {
+			return nil, fmt.Errorf("ожидается список, получено %T", v)
+		}
 	}
 
 	out := make([]string, 0, len(items))
