@@ -1,4 +1,4 @@
-# Развёртывание на VPS:
+# Развёртывание на VPS: сервер и TLS одной командой.
 #
 #   sudo docker compose up -d --build
 #
@@ -46,8 +46,11 @@ services:
         max-file: "3"
 
     networks:
-      mcp-network:
-        external: true
+      - mcp-network
 
 volumes:
   oauth:
+
+networks:
+  mcp-network:
+    external: true
