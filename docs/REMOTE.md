@@ -109,23 +109,23 @@ docker ps
 git clone https://github.com/MainAlexStark/ozon-seller-mcp.git
 ```
 
-### 2. Создание пароля владельца 
+### 1. Создание пароля владельца 
 
 Сгенерируйте хеш пароля владельца:
 ```bash
 docker compose run --rm --entrypoint /ozon-seller-mcp ozon-seller-mcp --hash-password
 ```
 
-### 1. Секреты — один раз
+### 2. Секреты — один раз
 
 ```bash
 sudo install -m 600 deploy/ozon-seller-mcp.env /etc/ozon-seller-mcp.env
-sudo nano /etc/ozon-seller-mcp.env      # ключ Ozon и хеш пароля владельца
+sudo nano deploy/ozon-seller-mcp.env      # ключ Ozon и хеш пароля владельца
 ```
 
 Адрес сервера (`OZON_PUBLIC_URL`) в этом файле трогать не нужно: в docker-развёртывании он подставляется из `.env`.
 
-### 2. Запуск
+### 3. Запуск
 
 ```bash
 sudo docker compose up -d --build
@@ -140,7 +140,7 @@ sudo docker compose ps
 curl -s https://ozon-mcp.example.com/healthz
 ```
 
-### 3. Обновление
+### 4. Обновление
 
 ```bash
 git pull --ff-only
