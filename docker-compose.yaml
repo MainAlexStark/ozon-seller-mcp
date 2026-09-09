@@ -28,7 +28,7 @@ services:
     restart: unless-stopped
 
     env_file:
-      - /etc/ozon-seller-mcp.env
+      - ./deploy/ozon-seller-mcp.env
 
     environment:
       # Перекрывает значение из env-файла: адрес живёт в .env, а не
@@ -61,42 +61,9 @@ services:
         max-size: "10m"
         max-file: "3"
 
-  caddy:
-    image: caddy:2-alpine
-
-    container_name: ozon-seller-mcp-caddy
-
-    restart: unless-stopped
-
-    depends_on:
-      - ozon-seller-mcp
-
-    # 80 нужен не для сайта, а для выпуска сертификата: Let's Encrypt
-    # проверяет владение доменом по HTTP.
-    ports:
-      - "80:80"
-      - "443:443"
-
-    environment:
-      OZON_DOMAIN: ${OZON_DOMAIN}
-      OZON_UPSTREAM: ozon-seller-mcp:8571
-
-    volumes:
-      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
-      # Сертификаты. Без тома Let's Encrypt выпускал бы их заново на
-      # каждый перезапуск и быстро упёрся бы в недельный лимит.
-      - caddy-data:/data
-      - caddy-config:/config
-      - caddy-logs:/var/log/caddy
-
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
+    networks:
+      mcp-network:
+        external: true
 
 volumes:
   oauth:
-  caddy-data:
-  caddy-config:
-  caddy-logs:

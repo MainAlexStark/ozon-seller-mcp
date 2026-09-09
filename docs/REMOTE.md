@@ -7,9 +7,114 @@
 
 ## Развёртывание на VPS
 
-Способа два. Docker Compose поднимает сразу и сервер, и TLS — это две команды и один способ обновляться. Ниже него — те же шаги вручную, под systemd: пригодится, если Docker на машине нежелателен.
+Способа два. Docker Compose поднимает сразу и сервер, и TLS — это две команды и один способ обновляться.
 
-## Docker Compose
+## 0. Caddy
+
+Caddy позволит удобно масштабировать кол-во mcp-серверов на вашей машине, позволяя обращатся к ним по соотвествующим адресам
+
+### 0. Создайте директорию для caddy
+
+```bash
+mkdir /opt/infrastructure
+touch /opt/infrastructure/docker-compose.yml
+touch /opt/infrastructure/Caddyfile
+```
+
+### 1. Заполните docker-compose
+
+```bash
+sudo nano /opt/infrastructure/docker-compose.yml
+```
+
+```docker-compose.yaml
+services:
+  caddy:
+    image: caddy:2-alpine
+    container_name: caddy
+    restart: unless-stopped
+
+    ports:
+      - "80:80"
+      - "443:443"
+
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+      - caddy-logs:/var/log/caddy
+
+    networks:
+      - mcp-network
+
+    depends_on:
+      - ozon-seller-mcp
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  mcp-network:
+    external: true
+
+volumes:
+  caddy-data:
+  caddy-config:
+  caddy-logs:
+```
+
+
+### 2. Дополните Caddyfile
+
+```bash
+sudo nano /opt/infrastructure/Caddyfile
+```
+
+```Caddyfile
+ozon-mcp.example.com {
+    reverse_proxy ozon-seller-mcp:8571 {
+        transport http {
+            response_header_timeout 6m
+        }
+    }
+}
+```
+
+>> Контейнер mcp-сервера обязательно должен быть подключен к mcp-network, т.е в docker-compose обязательно:
+>> networks: 
+>>     mcp-network: 
+>>       external: true 
+
+### 3. Запустите контейнер Caddy
+
+```bash
+cd /opt/infrastructure
+docker compose up --build -d
+```
+
+### Проверка
+```bash
+docker logs caddy
+docker ps
+```
+
+## 1. Docker Compose
+
+### 0. Установка исходных файлов
+
+```bash
+git clone https://github.com/MainAlexStark/ozon-seller-mcp.git
+```
+
+### 2. Создание пароля владельца 
+
+Сгенерируйте хеш пароля владельца:
+```bash
+docker compose run --rm --entrypoint /ozon-seller-mcp ozon-seller-mcp --hash-password
+```
 
 ### 1. Секреты — один раз
 
@@ -18,18 +123,11 @@ sudo install -m 600 deploy/ozon-seller-mcp.env /etc/ozon-seller-mcp.env
 sudo nano /etc/ozon-seller-mcp.env      # ключ Ozon и хеш пароля владельца
 ```
 
-Хеш пароля считается тем же бинарником — если его ещё нет под рукой, проще всего одноразовым контейнером:
-
-```bash
-docker compose run --rm --entrypoint /ozon-seller-mcp ozon-seller-mcp --hash-password
-```
-
 Адрес сервера (`OZON_PUBLIC_URL`) в этом файле трогать не нужно: в docker-развёртывании он подставляется из `.env`.
 
-### 2. Домен и запуск
+### 2. Запуск
 
 ```bash
-echo "OZON_DOMAIN=ozon-mcp.example.com" > .env
 sudo docker compose up -d --build
 ```
 
