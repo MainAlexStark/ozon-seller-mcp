@@ -53,9 +53,6 @@ services:
     networks:
       - mcp-network
 
-    depends_on:
-      - ozon-seller-mcp
-
     logging:
       driver: json-file
       options:
