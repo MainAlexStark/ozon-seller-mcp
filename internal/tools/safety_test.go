@@ -40,7 +40,7 @@ func TestPriceGuardCatchesOrderOfMagnitudeTypo(t *testing.T) {
 
 	// Классическая опечатка: потерян ноль.
 	err := s.CheckPriceChanges([]PriceChange{
-		{OfferID: "pp-mw-1", Old: 6900, New: 690},
+		{Item: "pp-mw-1", Old: 6900, New: 690},
 	}, false)
 
 	if err == nil {
@@ -59,7 +59,7 @@ func TestPriceGuardAllowsSmallChange(t *testing.T) {
 	s.Mode = ModeWrite
 
 	err := s.CheckPriceChanges([]PriceChange{
-		{OfferID: "pp-mw-1", Old: 1000, New: 1200}, // +20 %
+		{Item: "pp-mw-1", Old: 1000, New: 1200}, // +20 %
 	}, false)
 	if err != nil {
 		t.Fatalf("изменение на 20 %% должно проходить: %v", err)
@@ -71,7 +71,7 @@ func TestPriceGuardRespectsConfirmation(t *testing.T) {
 	s.Mode = ModeWrite
 
 	err := s.CheckPriceChanges([]PriceChange{
-		{OfferID: "pp-mw-1", Old: 6900, New: 690},
+		{Item: "pp-mw-1", Old: 6900, New: 690},
 	}, true)
 	if err != nil {
 		t.Fatalf("подтверждённое изменение должно проходить: %v", err)
@@ -84,7 +84,7 @@ func TestPriceGuardIgnoresUnknownCurrentPrice(t *testing.T) {
 	s.Mode = ModeWrite
 
 	err := s.CheckPriceChanges([]PriceChange{
-		{OfferID: "новый-товар", Old: 0, New: 1500},
+		{Item: "новый-товар", Old: 0, New: 1500},
 	}, false)
 	if err != nil {
 		t.Fatalf("товар без текущей цены не должен блокироваться: %v", err)

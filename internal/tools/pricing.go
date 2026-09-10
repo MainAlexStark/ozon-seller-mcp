@@ -231,9 +231,9 @@ func (r *Registry) priceChanges(ctx context.Context, updates []ozon.PriceUpdate)
 			return nil, "", err
 		}
 		changes = append(changes, PriceChange{
-			OfferID: u.OfferID,
-			Old:     current[u.OfferID].Price,
-			New:     newPrice,
+			Item: u.OfferID,
+			Old:  current[u.OfferID].Price,
+			New:  newPrice,
 		})
 	}
 	return changes, "", nil

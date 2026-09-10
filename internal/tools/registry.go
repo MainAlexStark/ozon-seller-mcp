@@ -34,6 +34,11 @@ type Spec struct {
 	Path string
 	Desc string
 
+	// Get помечает метод, отвечающий на GET вместо POST. Такой
+	// инструмент аргументов не передаёт: у методов Seller API,
+	// сделанных через GET, их и нет.
+	Get bool
+
 	// Write помечает инструмент как изменяющий данные. Такие
 	// проходят через Safety.CheckWrite.
 	Write bool
@@ -95,7 +100,15 @@ func (r *Registry) Add(s Spec) {
 				payload = built
 			}
 
-			raw, err := r.client.Call(ctx, s.Path, payload)
+			var (
+				resp json.RawMessage
+				err  error
+			)
+			if s.Get {
+				resp, err = r.client.Get(ctx, s.Path)
+			} else {
+				resp, err = r.client.Call(ctx, s.Path, payload)
+			}
 			if err != nil {
 				if s.Hint != nil {
 					if hint := s.Hint(args, err); hint != "" {
@@ -105,7 +118,7 @@ func (r *Registry) Add(s Spec) {
 				return "", decorate(err)
 			}
 
-			return r.format(ctx, raw), nil
+			return r.format(ctx, resp), nil
 		},
 	})
 }

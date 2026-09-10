@@ -17,64 +17,86 @@ type probe struct {
 	Tool    string
 	Path    string
 	Payload any
+
+	// Get — метод отвечает на GET, а не на POST. Такие в Seller API
+	// единичны, и перепутанный глагол выглядит как отключённая
+	// версия метода: обе ошибки — 404.
+	Get bool
+}
+
+// post описывает обычную пробу: POST с минимальным телом.
+func post(tool, path string, payload any) probe {
+	return probe{Tool: tool, Path: path, Payload: payload}
+}
+
+// get описывает пробу метода, отвечающего на GET.
+func get(tool, path string) probe {
+	return probe{Tool: tool, Path: path, Get: true}
 }
 
 // probes — методы для самодиагностики. Все только читают.
 func probes() []probe {
 	return []probe{
 		// filter обязателен даже когда фильтровать нечего — см. defaults.go.
-		{"ozon_product_list", ozon.PathProductList, obj{"filter": obj{"visibility": "ALL"}, "limit": 1}},
-		{"ozon_prices_info", ozon.PathPricesInfo, obj{"filter": obj{"visibility": "ALL"}, "limit": 1}},
-		{"ozon_stocks_info", ozon.PathStocksInfo, obj{"filter": obj{"visibility": "ALL"}, "limit": 1}},
-		{"ozon_warehouse_list", ozon.PathWarehouseList, obj{}},
-		{"ozon_category_tree", ozon.PathCategoryTree, obj{"language": "RU"}},
-		{"ozon_finance_accrual_types", ozon.PathFinanceAccrualTypes, obj{}},
-		{"ozon_postings_list", ozon.PathPostingFBSList, obj{
+		post("ozon_product_list", ozon.PathProductList, obj{"filter": obj{"visibility": "ALL"}, "limit": 1}),
+		post("ozon_prices_info", ozon.PathPricesInfo, obj{"filter": obj{"visibility": "ALL"}, "limit": 1}),
+		post("ozon_stocks_info", ozon.PathStocksInfo, obj{"filter": obj{"visibility": "ALL"}, "limit": 1}),
+		post("ozon_warehouse_list", ozon.PathWarehouseList, obj{}),
+		post("ozon_category_tree", ozon.PathCategoryTree, obj{"language": "RU"}),
+		post("ozon_finance_accrual_types", ozon.PathFinanceAccrualTypes, obj{}),
+		post("ozon_postings_list", ozon.PathPostingFBSList, obj{
 			"filter": obj{
 				"since": time.Now().AddDate(0, 0, -7).Format(time.RFC3339),
 				"to":    time.Now().Format(time.RFC3339),
 			},
 			"limit": 1,
-		}},
+		}),
 
 		// FBO. Эти методы переезжали недавно и порознь — список
 		// отправлений уехал на v3, получение одного осталось на v2,
 		// поставки на v3, — поэтому дёргать их по одному особенно
 		// полезно: отключение видно сразу и поимённо.
-		{"ozon_fbo_postings_list", ozon.PathPostingFBOList, obj{
+		post("ozon_fbo_postings_list", ozon.PathPostingFBOList, obj{
 			"filter": obj{
 				"since": time.Now().AddDate(0, 0, -7).Format(time.RFC3339),
 				"to":    time.Now().Format(time.RFC3339),
 			},
 			"limit": 1,
-		}},
-		{"ozon_fbo_stocks", ozon.PathStockOnWarehouses, obj{"limit": 1, "offset": 0, "warehouse_type": "ALL"}},
+		}),
+		post("ozon_fbo_stocks", ozon.PathStockOnWarehouses, obj{"limit": 1, "offset": 0, "warehouse_type": "ALL"}),
 		// Тело собирается тем же кодом, что и у инструмента: у этого
 		// метода обязательны и сортировка, и непустой список статусов,
 		// и проверять стоит ровно то, что уходит в бою.
-		{"ozon_supply_orders_list", ozon.PathSupplyOrderList, withSupplyFilter(withLimit(obj{}, 1))},
-		{"ozon_supply_orders_counters", ozon.PathSupplyOrderCounters, obj{}},
-		{"ozon_fbo_clusters", ozon.PathClusterList, obj{}},
+		post("ozon_supply_orders_list", ozon.PathSupplyOrderList, withSupplyFilter(withLimit(obj{}, 1))),
+		post("ozon_supply_orders_counters", ozon.PathSupplyOrderCounters, obj{}),
+		post("ozon_fbo_clusters", ozon.PathClusterList, obj{}),
 
 		// Возвраты и документы. Проверяются без фильтров: у возвратов
 		// условия фильтра взаимоисключающие, а у сертификатов
 		// постраничность обязательна.
-		{"ozon_returns_list", ozon.PathReturnsList, obj{"limit": 1}},
-		{"ozon_certification_required", ozon.PathCertificationList, obj{"page": 1, "page_size": 1}},
-		{"ozon_certificates_list", ozon.PathCertificateList, obj{"page": 1, "page_size": 1}},
+		post("ozon_returns_list", ozon.PathReturnsList, obj{"limit": 1}),
+		post("ozon_certification_required", ozon.PathCertificationList, obj{"page": 1, "page_size": 1}),
+		post("ozon_certificates_list", ozon.PathCertificateList, obj{"page": 1, "page_size": 1}),
 
 		// Вопросы о товаре. Отказ прав здесь — не поломка: методы
 		// открыты только продавцам с Premium Plus, и самодиагностика
 		// как раз и отвечает на вопрос, есть ли к ним доступ вообще.
-		{"ozon_questions_count", ozon.PathQuestionCount, obj{}},
+		post("ozon_questions_count", ozon.PathQuestionCount, obj{}),
+
+		// Акции и автостратегии. Список акций — единственный метод
+		// сервера, отвечающий на GET: если 404 придёт только на него,
+		// дело в глаголе, а не в отключённой версии.
+		get("ozon_actions_list", ozon.PathActionsList),
+		post("ozon_pricing_strategies_list", ozon.PathStrategyList, obj{"page": 1, "limit": 1}),
+		post("ozon_pricing_competitors", ozon.PathStrategyCompetitors, obj{"page": 1, "limit": 1}),
 
 		// Методы с обязательными полями, о которых легко забыть:
 		// у отзывов limit не меньше 20, у начислений — один день,
 		// а не период.
-		{"ozon_reviews_list", ozon.PathReviewList, obj{"limit": minReviewsLimit}},
-		{"ozon_finance_by_day", ozon.PathFinanceAccrualByDay, obj{
+		post("ozon_reviews_list", ozon.PathReviewList, obj{"limit": minReviewsLimit}),
+		post("ozon_finance_by_day", ozon.PathFinanceAccrualByDay, obj{
 			"date": time.Now().AddDate(0, 0, -1).Format("2006-01-02"),
-		}},
+		}),
 	}
 }
 
@@ -183,7 +205,12 @@ func runProbe(ctx context.Context, c *ozon.Client, p probe) (string, error) {
 	defer cancel()
 
 	start := time.Now()
-	_, err := c.Call(ctx, p.Path, p.Payload)
+	var err error
+	if p.Get {
+		_, err = c.Get(ctx, p.Path)
+	} else {
+		_, err = c.Call(ctx, p.Path, p.Payload)
+	}
 	elapsed := time.Since(start).Round(time.Millisecond)
 
 	if err == nil {

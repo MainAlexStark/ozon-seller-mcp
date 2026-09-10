@@ -51,6 +51,32 @@ const (
 	PathPricesInfo   = "/v5/product/info/prices"
 	PathPricesImport = "/v1/product/import/prices"
 
+	// --- Акции ---
+	//
+	// PathActionsList — единственный метод сервера, отвечающий на GET.
+	// На POST он отдаёт 404, и это выглядит как отключённая версия,
+	// хотя дело в глаголе.
+	PathActionsList      = "/v1/actions"
+	PathActionCandidates = "/v1/actions/candidates"
+	PathActionProducts   = "/v1/actions/products"
+	PathActionActivate   = "/v1/actions/products/activate"
+	PathActionDeactivate = "/v1/actions/products/deactivate"
+
+	// --- Автостратегии цен ---
+	//
+	// Товар состоит не более чем в одной стратегии, поэтому удаление
+	// товара из стратегии её идентификатор не принимает — только
+	// список товаров.
+	PathStrategyList        = "/v1/pricing-strategy/list"
+	PathStrategyInfo        = "/v1/pricing-strategy/info"
+	PathStrategyItems       = "/v1/pricing-strategy/products/list"
+	PathStrategyItemInfo    = "/v1/pricing-strategy/product/info"
+	PathStrategyCompetitors = "/v1/pricing-strategy/competitors/list"
+	PathStrategyCreate      = "/v1/pricing-strategy/create"
+	PathStrategyItemsAdd    = "/v1/pricing-strategy/products/add"
+	PathStrategyItemsDelete = "/v1/pricing-strategy/products/delete"
+	PathStrategyStatus      = "/v1/pricing-strategy/status"
+
 	// --- Остатки ---
 	PathStocksInfo        = "/v4/product/info/stocks"
 	PathStocksImport      = "/v2/products/stocks"

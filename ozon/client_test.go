@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -230,5 +231,44 @@ func TestWaitImportPolls(t *testing.T) {
 	}
 	if len(items) != 1 || items[0].Status != "imported" {
 		t.Fatalf("неожиданный результат: %+v", items)
+	}
+}
+
+// Get существует ради нескольких справочных методов Seller API,
+// которые на POST отвечают 404. Проверяется здесь не только глагол:
+// заголовок Content-Type без тела объявляет формат того, чего нет,
+// и часть серверов на это обижается.
+func TestGetSendsNoBody(t *testing.T) {
+	var (
+		method      string
+		contentType string
+		hasBody     bool
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		method = r.Method
+		contentType = r.Header.Get("Content-Type")
+		body, _ := io.ReadAll(r.Body)
+		hasBody = len(body) > 0
+
+		if r.Header.Get("Client-Id") == "" || r.Header.Get("Api-Key") == "" {
+			t.Error("ключи должны уходить и с GET")
+		}
+		_, _ = w.Write([]byte(`{"result":[]}`))
+	}))
+	defer srv.Close()
+
+	c := New("cid", "key", WithBaseURL(srv.URL))
+	if _, err := c.Get(context.Background(), PathActionsList); err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+
+	if method != http.MethodGet {
+		t.Errorf("метод: %s", method)
+	}
+	if hasBody {
+		t.Error("GET не должен отправлять тело")
+	}
+	if contentType != "" {
+		t.Errorf("без тела не должно быть и Content-Type, получено %q", contentType)
 	}
 }

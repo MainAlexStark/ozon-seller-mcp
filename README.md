@@ -1,6 +1,6 @@
 # ozon-seller-mcp
 
-MCP-сервер для [Ozon Seller API](https://docs.ozon.ru/api/seller). Даёт Claude доступ к кабинету продавца: каталог, цены, остатки, аналитика, финансы, отправления FBS, поставки FBO, возвраты, вопросы покупателей, сертификаты и штрихкоды — 54 инструмента.
+MCP-сервер для [Ozon Seller API](https://docs.ozon.ru/api/seller). Даёт Claude доступ к кабинету продавца: каталог, цены, остатки, акции и автостратегии, аналитика, финансы, отправления FBS, поставки FBO, возвраты, вопросы покупателей, сертификаты и штрихкоды — 68 инструментов.
 
 Внутри лежит и самостоятельный Go-клиент Seller API (`ozon/`) — его можно использовать отдельно от MCP.
 
@@ -130,6 +130,8 @@ ozon-seller-mcp --grants
 
 Если текущие цены прочитать не удалось, запись не блокируется — иначе временный сбой парализовал бы работу, — но в ответ добавляется предупреждение, что проверка не сработала.
 
+Та же страховка стоит на добавлении товаров в акцию: акционная цена — это цена, и опечатка в ней стоит столько же, но выглядит безобиднее, потому что «в акции же должно быть дёшево». Там она вдобавок знает потолок, который называет сам Ozon, и цену выше потолка отклоняет сразу — без подтверждения, потому что обсуждать нечего: такой товар площадка не примет в любом случае.
+
 **3. Ограничение размера ответа.** Ответ на несколько мегабайт не «просто длинный»: клиент режет результат инструмента по числу токенов, и такой ответ до модели не доезжает вовсе — она видит отказ, не понимает причины и повторяет вызов. Поэтому длинные ответы обрезаются здесь: JSON — по элементам массива, так что наружу выходит валидный документ с отметкой о том, сколько осталось за кадром, и подсказкой, как сузить выборку.
 
 ## Если Ozon отвечает таймаутом
@@ -151,6 +153,10 @@ ozon-seller-mcp --grants
 | Каталог (запись) | `product_import`, `import_status`, `product_update_attributes`, `pictures_import`, `product_visibility_set` |
 | Цены и остатки | `prices_info`, `stocks_info`, `stocks_by_warehouse` |
 | Цены и остатки (запись) | `prices_update`, `stocks_update` |
+| Акции | `actions_list`, `action_candidates`, `action_products` |
+| Акции (запись) | `action_products_activate`, `action_products_deactivate` |
+| Автостратегии цен | `pricing_strategies_list`, `pricing_strategy_info`, `pricing_strategy_products`, `pricing_strategy_product_info`, `pricing_competitors` |
+| Автостратегии цен (запись) | `pricing_strategy_create`, `pricing_strategy_products_add`, `pricing_strategy_products_delete`, `pricing_strategy_status` |
 | Аналитика | `analytics_data`, `analytics_stocks` |
 | Финансы | `finance_summary`, `finance_by_day`, `finance_postings`, `finance_accrual_types` |
 | Заказы FBS | `postings_list`, `posting_get`, `reviews_list` |

@@ -118,9 +118,13 @@ func (s Safety) CheckBatchSize(n int) error {
 
 // PriceChange — предполагаемое изменение цены одного товара.
 type PriceChange struct {
-	OfferID string
-	Old     float64
-	New     float64
+	// Item — как назвать товар в отчёте об остановленной записи.
+	// Обычно артикул продавца, но у акций товары приходят числовыми
+	// идентификаторами, а человеку в чате всё равно нужна строка,
+	// по которой он найдёт товар в кабинете.
+	Item string
+	Old  float64
+	New  float64
 }
 
 // DeltaPct — насколько новая цена отличается от текущей, в процентах.
@@ -157,7 +161,7 @@ func (s Safety) CheckPriceChanges(changes []PriceChange, confirmed bool) error {
 	fmt.Fprintf(&b, "Чаще всего это опечатка в порядке величины (690 вместо 6900), "+
 		"и она уничтожает маржу молча: Ozon примет такую цену без возражений.\n\n")
 	for _, c := range suspicious {
-		fmt.Fprintf(&b, "  %-24s %.2f → %.2f  (%.0f%%)\n", c.OfferID, c.Old, c.New, c.DeltaPct())
+		fmt.Fprintf(&b, "  %-24s %.2f → %.2f  (%.0f%%)\n", c.Item, c.Old, c.New, c.DeltaPct())
 	}
 	fmt.Fprintf(&b, "\nЕсли изменение верное, повторите вызов с confirm_large_change: true.")
 

@@ -123,6 +123,8 @@ func main() {
 	reg.RegisterReturns()
 	reg.RegisterQuestions()
 	reg.RegisterCertificates()
+	reg.RegisterPromotions()
+	reg.RegisterPricingStrategies()
 	reg.RegisterDiagnostics()
 
 	if *check {

@@ -134,6 +134,23 @@ func (c *Client) Call(ctx context.Context, path string, payload any) (json.RawMe
 		return nil, fmt.Errorf("ozon: сериализация запроса %s: %w", path, err)
 	}
 
+	return c.call(ctx, http.MethodPost, path, body)
+}
+
+// Get выполняет GET к методу Seller API.
+//
+// Почти весь Seller API — это POST с телом, даже там, где запрос
+// ничего не меняет и ничего не фильтрует. Но несколько справочных
+// методов сделаны иначе и на POST отвечают 404 — например, список
+// доступных акций. Отдельный метод здесь нужен ровно поэтому: чтобы
+// «метод не найден» не приходилось расследовать заново каждый раз,
+// когда на самом деле не совпал глагол.
+func (c *Client) Get(ctx context.Context, path string) (json.RawMessage, error) {
+	return c.call(ctx, http.MethodGet, path, nil)
+}
+
+// call выполняет запрос с повторами и лимитером.
+func (c *Client) call(ctx context.Context, method, path string, body []byte) (json.RawMessage, error) {
 	var lastErr error
 	for attempt := 0; attempt <= c.maxRetries; attempt++ {
 		if c.limiter != nil {
@@ -142,7 +159,7 @@ func (c *Client) Call(ctx context.Context, path string, payload any) (json.RawMe
 			}
 		}
 
-		raw, err := c.do(ctx, path, body)
+		raw, err := c.do(ctx, method, path, body)
 		if err == nil {
 			return raw, nil
 		}
@@ -181,14 +198,24 @@ func (c *Client) CallInto(ctx context.Context, path string, payload, out any) er
 	return nil
 }
 
-func (c *Client) do(ctx context.Context, path string, body []byte) (json.RawMessage, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, bytes.NewReader(body))
+func (c *Client) do(ctx context.Context, method, path string, body []byte) (json.RawMessage, error) {
+	// GET идёт без тела: nil-тело и заголовок Content-Type — вещи
+	// разные, и отправлять второе без первого значит объявить формат
+	// того, чего нет.
+	var reader io.Reader
+	if body != nil {
+		reader = bytes.NewReader(body)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, reader)
 	if err != nil {
 		return nil, fmt.Errorf("ozon: сборка запроса %s: %w", path, err)
 	}
 	req.Header.Set("Client-Id", c.clientID)
 	req.Header.Set("Api-Key", c.apiKey)
-	req.Header.Set("Content-Type", "application/json")
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
 
 	resp, err := c.http.Do(req)
 	if err != nil {
