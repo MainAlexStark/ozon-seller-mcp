@@ -71,7 +71,19 @@ type Config struct {
 	ResourceURL string
 
 	// PasswordHash — хеш пароля владельца (см. password.go).
+	//
+	// Задавать его вручную нужно только тогда, когда открытый пароль
+	// не должен попадать в окружение сервера даже в файле с правами 600.
 	PasswordHash string
+
+	// Password — пароль владельца открытым текстом.
+	//
+	// Используется, когда хеш не задан: сервер считает его сам при
+	// старте. Это стоит около четверти секунды один раз за запуск
+	// и снимает с развёртывания отдельный шаг «сгенерируйте хеш
+	// и вставьте строку» — шаг, который нельзя выполнить одной
+	// командой и на котором чаще всего и застревают.
+	Password string
 
 	Store  *Store
 	Logger *slog.Logger
@@ -89,9 +101,19 @@ func New(cfg Config) (*Server, error) {
 	if cfg.Issuer == "" {
 		return nil, errConfig("не задан внешний адрес сервера (OZON_PUBLIC_URL)")
 	}
+	// Хеш из открытого пароля считаем сами: это единственное место,
+	// где он нужен, и считать его заранее человеку незачем.
+	if cfg.PasswordHash == "" && cfg.Password != "" {
+		hash, err := HashPassword(cfg.Password)
+		if err != nil {
+			return nil, err
+		}
+		cfg.PasswordHash = hash
+	}
 	if cfg.PasswordHash == "" {
-		return nil, errConfig("не задан пароль владельца: сгенерируйте хеш через --hash-password " +
-			"и положите в OZON_OWNER_PASSWORD_HASH")
+		return nil, errConfig("не задан пароль владельца: положите его в OZON_OWNER_PASSWORD " +
+			"(сервер посчитает хеш сам) либо, если открытый пароль в окружении нежелателен, " +
+			"посчитайте хеш через --hash-password и положите в OZON_OWNER_PASSWORD_HASH")
 	}
 	if cfg.Store == nil {
 		return nil, errConfig("не задано хранилище")

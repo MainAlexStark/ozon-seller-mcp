@@ -15,6 +15,7 @@
 //	OZON_ALLOW_WRITES        stdio: true разрешает изменение данных
 //	OZON_HTTP_ADDR           сетевой режим: адрес прослушивания
 //	OZON_PUBLIC_URL          сетевой режим: внешний адрес, включает OAuth
+//	OZON_OWNER_PASSWORD      сетевой режим: пароль владельца (сервер хеширует его сам)
 //	OZON_OWNER_PASSWORD_HASH сетевой режим: хеш пароля владельца (--hash-password)
 //	OZON_OAUTH_STORE         сетевой режим: файл хранилища OAuth
 //	OZON_RESOURCE_URL        сетевой режим: адрес MCP, если отличается от <public>/mcp
@@ -180,6 +181,7 @@ func runHTTP(ctx context.Context, srv *mcp.Server, safety tools.Safety, addr str
 		oauthSrv, err := oauth.New(oauth.Config{
 			Issuer:       publicURL,
 			ResourceURL:  os.Getenv("OZON_RESOURCE_URL"),
+			Password:     os.Getenv("OZON_OWNER_PASSWORD"),
 			PasswordHash: os.Getenv("OZON_OWNER_PASSWORD_HASH"),
 			Store:        store,
 			Logger:       logger,

@@ -68,9 +68,27 @@ claude mcp add ozon \
 }
 ```
 
+## Развёртывание на VPS
+
+Одна команда на чистой машине с Docker — заведите A-запись домена на её адрес и запустите:
+
+```bash
+git clone https://github.com/MainAlexStark/ozon-seller-mcp
+cd ozon-seller-mcp
+./deploy.sh ozon-mcp.example.com
+```
+
+Скрипт спросит ключи Ozon, поднимет Caddy с сертификатом, придумает пароль владельца и токены, соберёт и запустит сервер, дождётся ответа по HTTPS и напечатает адрес для Claude. Обновление — тоже одна команда, с откатом, если новая версия не отвечает:
+
+```bash
+./deploy.sh update
+```
+
+Подробности, разбор отказов и способ без Docker — [`docs/REMOTE.md`](docs/REMOTE.md).
+
 ## Подключение к Claude Desktop [Streamable HTTP]
 
-После того как вы развернули OZON-SELLER-MCP по инструкции из [`docs/REMOTE.md`](docs/REMOTE.md) на вашей удаленной машине, вы можете подключить новый коннектор в claude-desktop
+Когда сервер развёрнут, добавьте коннектор в Claude Desktop
 
 1. Claude Desktop → Settings → Connectors → Add custom connector
 2. URL: https://example.com/mcp
@@ -98,7 +116,8 @@ ozon-seller-mcp --grants
 | `OZON_ALLOW_WRITES` | `false` | stdio: `true` разрешает изменять данные |
 | `OZON_HTTP_ADDR` | — | сеть: адрес прослушивания, например `127.0.0.1:8571` |
 | `OZON_PUBLIC_URL` | — | сеть: внешний адрес; его наличие включает OAuth |
-| `OZON_OWNER_PASSWORD_HASH` | — | сеть: хеш пароля владельца (`--hash-password`) |
+| `OZON_OWNER_PASSWORD` | — | сеть: пароль владельца; хеш сервер считает сам |
+| `OZON_OWNER_PASSWORD_HASH` | — | сеть: готовый хеш (`--hash-password`), если открытый пароль нежелателен |
 | `OZON_OAUTH_STORE` | `/var/lib/…/oauth.json` | сеть: файл клиентов и токенов |
 | `OZON_TOKEN_READ` | — | статический токен на чтение (автоматизация) |
 | `OZON_TOKEN_WRITE` | — | статический токен на чтение и запись (автоматизация) |
@@ -204,6 +223,8 @@ r.Add(Spec{
 ```
 
 Сам протокол держит [официальный Go SDK](https://github.com/modelcontextprotocol/go-sdk): рукопожатие, согласование версий, оба транспорта. Пакет `internal/mcp` — тонкий слой поверх него, и граница проведена намеренно: инструменты не знают ни про JSON-RPC, ни про типы SDK, поэтому следующая смена версии протокола останавливается в одном файле, а не расходится по тридцати инструментам.
+
+Общая структура репозитория описана в [`STANDARD.md`](STANDARD.md): она одна и та же у этого сервера и у [`k8s-mcp`](https://github.com/MainAlexStark/k8s-mcp), и это сделано затем, чтобы, разобравшись в одном, не разбираться заново в другом.
 
 ## Разработка
 

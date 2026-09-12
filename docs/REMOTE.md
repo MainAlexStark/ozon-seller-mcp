@@ -5,227 +5,91 @@
 - **stdio** — Claude запускает сервер подпроцессом на вашей машине. Просто, но работает только там, где стоит бинарник.
 - **Streamable HTTP** — сервер живёт на VPS, к нему подключаются ноутбук, рабочая машина и телефон. Ключ Ozon при этом лежит в одном месте, а не копируется на каждое устройство.
 
-## Развёртывание на VPS
+## Развёртывание: одна команда
 
-Способа два. Docker Compose поднимает сразу и сервер, и TLS — это две команды и один способ обновляться.
-
-## 0. Caddy
-
-Caddy позволит удобно масштабировать кол-во mcp-серверов на вашей машине, позволяя обращатся к ним по соотвествующим адресам
-
-### Установите новую dns запись в вашем регистраторе
+Нужен VPS с Docker и заведённая A-запись домена на его адрес:
 
 ```
-*.example.com    A       VPS_IP
+ozon-mcp.example.com    A    <адрес VPS>
 ```
 
-### Создайте сеть если ее еще нет
-
-```bash
-sudo docker network create mcp-network
-```
-
-### 0. Создайте директорию для caddy
-
-```bash
-mkdir /opt/infrastructure
-touch /opt/infrastructure/docker-compose.yml
-touch /opt/infrastructure/Caddyfile
-```
-
-### 1. Заполните docker-compose
-
-```bash
-sudo nano /opt/infrastructure/docker-compose.yml
-```
-
-```docker-compose.yaml
-services:
-  caddy:
-    image: caddy:2-alpine
-    container_name: caddy
-    restart: unless-stopped
-
-    ports:
-      - "80:80"
-      - "443:443"
-
-    volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy-data:/data
-      - caddy-config:/config
-      - caddy-logs:/var/log/caddy
-
-    networks:
-      - mcp-network
-
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
-
-networks:
-  mcp-network:
-    external: true
-
-volumes:
-  caddy-data:
-  caddy-config:
-  caddy-logs:
-```
-
-
-### 2. Дополните Caddyfile
-
-```bash
-sudo nano /opt/infrastructure/Caddyfile
-```
-
-```Caddyfile
-ozon-mcp.example.com {
-    reverse_proxy ozon-seller-mcp:8571 {
-        transport http {
-            response_header_timeout 6m
-        }
-    }
-}
-```
-
->> Контейнер mcp-сервера обязательно должен быть подключен к mcp-network, т.е в docker-compose обязательно:
->> networks: 
->>     mcp-network: 
->>       external: true 
-
-### 3. Запустите контейнер Caddy
-
-```bash
-cd /opt/infrastructure
-docker compose up --build -d
-```
-
-### Проверка
-```bash
-docker logs caddy
-docker ps
-```
-
-## 1. Docker Compose
-
-### 0. Установка исходных файлов
-
-```bash
-git clone https://github.com/MainAlexStark/ozon-seller-mcp.git
-```
-
-### 1. Создание пароля владельца 
-
-Сгенерируйте хеш пароля владельца:
-```bash
-docker compose run --rm --entrypoint /ozon-seller-mcp ozon-seller-mcp --hash-password
-```
-
-### 2. Секреты — один раз
-
-```bash
-sudo install -m 600 deploy/ozon-seller-mcp.env /etc/ozon-seller-mcp.env
-sudo nano deploy/ozon-seller-mcp.env      # ключ Ozon и хеш пароля владельца
-```
-
-Адрес сервера (`OZON_PUBLIC_URL`) в этом файле трогать не нужно: в docker-развёртывании он подставляется из `.env`.
-
-### 3. Запуск
-
-```bash
-sudo docker compose up -d --build
-```
-
-Всё: собрался образ, поднялся сервер, Caddy выпустил сертификат. Домен указан один раз — отсюда он попадает и в сертификат, и в `OZON_PUBLIC_URL` сервера. Наружу открыты только 80 и 443; сам сервер порт не публикует и виден только Caddy по внутренней сети.
-
-Проверить:
-
-```bash
-sudo docker compose ps
-curl -s https://ozon-mcp.example.com/healthz
-```
-
-### 4. Обновление
-
-```bash
-git pull --ff-only
-sudo VERSION="$(git describe --tags --always)" docker compose up -d --build
-```
-
-`down` перед этим не нужен: compose сам пересоздаёт то, что изменилось. Подключённые устройства обновление переживают — клиенты и токены лежат в томе `oauth`, а не в контейнере.
-
-Журналы и данные:
-
-```bash
-sudo docker compose logs -f ozon-seller-mcp   # что делает сервер
-sudo docker compose logs -f caddy             # выпуск сертификата, ошибки TLS
-sudo docker volume ls | grep ozon-seller-mcp  # oauth, сертификаты, логи Caddy
-```
-
-## Вручную, под systemd
-
-### 1. Сборка и установка
+Дальше:
 
 ```bash
 git clone https://github.com/MainAlexStark/ozon-seller-mcp
 cd ozon-seller-mcp
+./deploy.sh ozon-mcp.example.com
+```
+
+Скрипт спросит `Client-Id` и API-ключ (один раз) и сделает остальное сам:
+
+1. заведёт сеть `mcp-network`;
+2. поднимет общий Caddy в `/opt/infrastructure`, если его там ещё нет;
+3. впишет домен в его `Caddyfile` между маркерами `# >>> ozon-seller-mcp` и `# <<<` — соседние блоки не трогает, свой прежний заменяет;
+4. придумает пароль владельца и статические токены и положит в `deploy/ozon-seller-mcp.env` с правами 600;
+5. соберёт образ и поднимет сервер;
+6. дождётся `200` от `https://<домен>/healthz` — то есть и старта сервера, и выпуска сертификата.
+
+В конце напечатает адрес для Claude, пароль владельца и токены. Повторный запуск ничего не ломает: пароль и токены не перевыпускаются — иначе отвалились бы уже подключённые устройства.
+
+Без диалога (например из своего скрипта):
+
+```bash
+OZON_CLIENT_ID=… OZON_API_KEY=… ./deploy.sh ozon-mcp.example.com
+```
+
+Хеш пароля больше считать не нужно: сервер делает это сам из `OZON_OWNER_PASSWORD`. Прежний способ работает — заданный `OZON_OWNER_PASSWORD_HASH` имеет приоритет; он нужен, если открытый пароль нежелателен в окружении даже в файле с правами 600.
+
+## Обновление: одна команда
+
+```bash
+./deploy.sh update
+```
+
+`git pull --ff-only`, пересборка, ожидание `/healthz`. **Если новая версия не отвечает — скрипт откатывается на прежний коммит и поднимает его обратно.** Откат здесь не удобство: без него неудачное обновление оставляет сервер лежать до ручного разбора, а узнаёте вы об этом от того, кто им пользуется.
+
+Подключённые устройства обновление переживают: клиенты и токены лежат в томе `oauth`, а не в контейнере.
+
+## Остальные команды
+
+```bash
+./deploy.sh status     # что запущено и отвечает ли сервер
+./deploy.sh logs       # журнал сервера
+./deploy.sh secrets    # снова показать пароль и токены
+./deploy.sh restart
+./deploy.sh down
+```
+
+## Если сервер не ответил
+
+Скрипт назовёт три причины по убыванию частоты — вот они подробнее:
+
+1. **DNS.** `dig +short ozon-mcp.example.com` должен вернуть адрес этого VPS. Свежая запись расходится по резолверам не мгновенно.
+2. **Порты 80 и 443.** Без них Let's Encrypt не выдаст сертификат: проверка идёт по HTTP. `sudo docker compose -f /opt/infrastructure/docker-compose.yml logs caddy` покажет, на чём остановился выпуск.
+3. **Сервер упал на старте.** `./deploy.sh logs`. Чаще всего это неверный ключ Ozon — тогда в журнале будет отказ авторизации, а не сетевая ошибка.
+
+## Вручную, под systemd
+
+Способ для машины, где Docker не годится. Всё то же самое, но руками.
+
+```bash
 go build -ldflags "-s -w -X main.version=$(git describe --tags --always)" \
   -o /usr/local/bin/ozon-seller-mcp ./cmd/ozon-seller-mcp
-```
 
-### 2. Пароль владельца
-
-```bash
-ozon-seller-mcp --hash-password
-```
-
-Пароль читается со stdin: аргументы командной строки видны через `ps` и остаются в истории оболочки. Сам пароль нигде не хранится — на сервере только PBKDF2-хеш.
-
-### 3. Конфигурация
-
-```bash
 sudo useradd --system --no-create-home --shell /usr/sbin/nologin ozonmcp
-sudo cp deploy/ozon-seller-mcp.env /etc/ozon-seller-mcp.env
-sudo chmod 600 /etc/ozon-seller-mcp.env
-sudo nano /etc/ozon-seller-mcp.env      # ключ Ozon, внешний адрес, хеш пароля
-```
+sudo install -m 600 deploy/ozon-seller-mcp.env.example /etc/ozon-seller-mcp.env
+sudo nano /etc/ozon-seller-mcp.env      # ключи, внешний адрес, пароль владельца
 
-Секреты лежат в файле, а не в строке запуска: аргументы процесса видны любому пользователю через `ps`.
-
-### 4. Служба
-
-```bash
 sudo cp deploy/ozon-seller-mcp.service /etc/systemd/system/
 sudo systemctl enable --now ozon-seller-mcp
-sudo systemctl status ozon-seller-mcp
 ```
 
-Юнит слушает `127.0.0.1:8571` — наружу порт не выставлен.
+Юнит слушает `127.0.0.1:8571` — наружу порт не выставлен, TLS остаётся за обратным прокси. Секреты лежат в файле, а не в строке запуска: аргументы процесса видны любому пользователю через `ps`.
 
-### 5. TLS через Caddy
-
-```bash
-sudo apt install -y caddy
-```
+Проверка того, что сервер виден снаружи именно так, как ждёт Claude:
 
 ```bash
-sudo cp deploy/Caddyfile /etc/caddy/Caddyfile
-sudo nano /etc/caddy/Caddyfile          # заменить домен
-sudo systemctl reload caddy
-```
-
-Сертификат Caddy выпустит и будет продлевать сам.
-
-В конфиге вычищается строка запроса: секретов в адресе больше нет, но туда может попасть код авторизации, если клиент ошибётся с методом.
-
-### 6. Проверка
-
-```bash
-curl https://ozon-mcp.example.com/healthz
+curl -s https://ozon-mcp.example.com/healthz
 # {"status":"ok"}
 
 # 401 с указанием, где искать метаданные — так Claude узнаёт про OAuth
@@ -236,14 +100,13 @@ curl -s https://ozon-mcp.example.com/.well-known/oauth-protected-resource
 
 Поле `resource` обязано совпадать с адресом, который вы введёте в Claude, посимвольно.
 
-### 7. Применение обновлений
+Обновление:
 
 ```bash
 git pull --ff-only && \
 go build -ldflags "-s -w -X main.version=$(git describe --tags --always)" \
   -o /usr/local/bin/ozon-seller-mcp ./cmd/ozon-seller-mcp && \
-sudo systemctl restart ozon-seller-mcp && \
-sudo systemctl --no-pager status ozon-seller-mcp
+sudo systemctl restart ozon-seller-mcp
 ```
 
 ## Подключение устройств

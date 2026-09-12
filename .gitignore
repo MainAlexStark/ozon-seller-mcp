@@ -9,4 +9,7 @@ dist/
 .DS_Store
 go.work
 go.work.sum
-./deploy/ozon-seller-mcp.env
+
+# Секреты развёртывания: их пишет deploy.sh
+deploy/*.env
+deploy/kubeconfig
