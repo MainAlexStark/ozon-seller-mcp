@@ -13,16 +13,11 @@ import (
 // RegisterCatalog добавляет инструменты работы с каталогом и карточками.
 func (r *Registry) RegisterCatalog() {
 	// --- Категории ---
-
-	r.Add(Spec{
-		Name: "ozon_category_tree",
-		Path: ozon.PathCategoryTree,
-		Desc: "Дерево категорий и типов товара Ozon. Нужен, чтобы получить description_category_id и type_id — " +
-			"без них товар не создать. Ответ большой: указывайте language и при возможности сужайте выборку.",
-		Schema: schema(obj{
-			"language": obj{"type": "string", "enum": []string{"RU", "EN"}, "default": "RU"},
-		}),
-	})
+	//
+	// Дерево регистрируется через RegisterCategories (см. categories.go):
+	// у него собственный обработчик, который сплющивает гигантский ответ
+	// и умеет фильтровать по query, чтобы не скармливать модели всё дерево.
+	r.RegisterCategories()
 
 	r.Add(Spec{
 		Name: "ozon_category_attributes",
