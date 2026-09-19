@@ -167,96 +167,79 @@ func flattenTree(tree json.RawMessage) categoriesResult {
 		}
 	}
 
-	var lines []string
 	var res categoriesResult
 	if len(list) == 0 {
 		return res
 	}
 
 	for _, rootNode := range list {
-		walkNode(rootNode, "", &lines, &res)
+		walkNode(rootNode, 0, "", false, &res)
 	}
-	res.Lines = lines
 	return res
 }
 
-// walkNode обходит один узел дерева: печатает его типы товара и
-// спускается в детей.
-func walkNode(node any, prefix string, lines *[]string, res *categoriesResult) {
+// walkNode обходит один узел дерева и печатает типы товара под ним.
+//
+// У Ozon дерево устроено так: узел категории несёт category_name и
+// description_category_id (иерархия), а собственно типы товара живут
+// внутри него прямо в children — листьями с полями type_id и type_name.
+// Поэтому тип привязывается к категории-родителю, которая уже содержит
+// description_category_id. Она передаётся аргументом catID вместе с
+// собранным путём catPath: они спускаются вглубь, пока дерево это
+// позволяет, а при встрече листа-типа подставляются в строку.
+func walkNode(node any, catID int, catPath string, catDisabled bool, res *categoriesResult) {
 	m, ok := node.(map[string]any)
 	if !ok {
 		return
 	}
 
+	// Лист-тип: есть type_id, своей категории у него нет — id и путь
+	// берутся от родителя.
+	if typeID, isType := toInt(m["type_id"]); isType {
+		typeName := ""
+		if rawName, hasName := m["type_name"]; hasName && rawName != nil {
+			if s, isStr := rawName.(string); isStr {
+				typeName = s
+			}
+		}
+		disabledVal, _ := m["disabled"]
+		disabled := disabledVal == true || catDisabled
+		marker := ""
+		if disabled {
+			marker = "  {{откл}}"
+		}
+		res.Types++
+		res.Lines = append(res.Lines,
+			fmt.Sprintf("%d | %d | %s — %s%s", catID, typeID, catPath, typeName, marker))
+		return
+	}
+
+	// Узел категории. Его собственный description_category_id, если есть,
+	// становится текущим для всех типов внутри; имя добавляется к пути.
 	name, hasName := m["category_name"]
-	categoryID, _ := toInt(m["description_category_id"])
+	ownID, hasOwnID := toInt(m["description_category_id"])
+	if hasOwnID {
+		catID = ownID
+	}
 	disabledVal, _ := m["disabled"]
-	disabled := disabledVal == true
+	catDisabled = catDisabled || disabledVal == true
 
-	nameStr := ""
 	if hasName && name != nil {
-		if s, isStr := name.(string); isStr {
-			nameStr = s
-		}
-	}
-	path := prefix
-	if nameStr != "" {
-		if path != "" {
-			path = path + " / " + nameStr
-		} else {
-			path = nameStr
-		}
-	}
-
-	res.Categories++
-
-	// Типы товара, если есть, живут в списке types.
-	if rawTypes, hasTypes := m["types"]; hasTypes {
-		if types, isArr := rawTypes.([]any); isArr {
-			for _, t := range types {
-				typeID, ok := toInt(nodeField(t, "id", "type_id"))
-				if !ok {
-					typeID = 0
-				}
-				typeName := ""
-				if rawName := nodeField(t, "name", "type_name"); rawName != nil {
-					if s, isStr := rawName.(string); isStr {
-						typeName = s
-					}
-				}
-				marker := ""
-				if disabled {
-					marker = "  {{откл}}"
-				}
-				*lines = append(*lines, fmt.Sprintf("%d | %d | %s — %s%s",
-					categoryID, typeID, path, typeName, marker))
-				res.Types++
+		if nameStr, isStr := name.(string); isStr && nameStr != "" {
+			res.Categories++
+			if catPath != "" {
+				catPath = catPath + " / " + nameStr
+			} else {
+				catPath = nameStr
 			}
 		}
 	}
 
-	// Дочерние узлы.
 	if rawChildren, hasChildren := m["children"]; hasChildren {
 		if children, isArr := rawChildren.([]any); isArr {
 			for _, child := range children {
-				walkNode(child, path, lines, res)
+				walkNode(child, catID, catPath, catDisabled, res)
 			}
 		}
 	}
-}
-
-// nodeField достаёт из объекта типа товара значение по одному из
-// вариантов имени ключа: у Ozon бывает и id/name, и type_id/type_name.
-func nodeField(node any, firstKey, secondKey string) any {
-	m, ok := node.(map[string]any)
-	if !ok {
-		return nil
-	}
-	if v, has := m[firstKey]; has {
-		return v
-	}
-	if v, has := m[secondKey]; has {
-		return v
-	}
-	return nil
 }

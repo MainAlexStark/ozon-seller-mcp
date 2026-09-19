@@ -7,18 +7,27 @@ import (
 	"testing"
 )
 
-// categoryNode собирает узел дерева категорий той же формы, что отдаёт Ozon.
-// children и types — массивы или nil: у узла может не быть ни детей, ни типов.
-func categoryNode(id int, name string, children any, types any) map[string]any {
+// typeLeaf собирает лист-тип товара: у Ozon это дочерний узел категории
+// с полями type_id/type_name и пустым children.
+func typeLeaf(id int, name string) map[string]any {
+	return map[string]any{
+		"children":  []any{},
+		"disabled":  false,
+		"type_id":   id,
+		"type_name": name,
+	}
+}
+
+// categoryNode собирает узел категории: у него category_name и
+// description_category_id (иерархия), а типы — в children как листья.
+func categoryNode(id int, name string, children []any) map[string]any {
 	m := map[string]any{
 		"description_category_id": id,
 		"category_name":           name,
+		"disabled":                false,
 	}
-	if arr, ok := children.([]any); ok && len(arr) > 0 {
+	if len(children) > 0 {
 		m["children"] = children
-	}
-	if arr, ok := types.([]any); ok && len(arr) > 0 {
-		m["types"] = types
 	}
 	return m
 }
@@ -35,14 +44,18 @@ func treeServer(tree map[string]any) http.HandlerFunc {
 }
 
 func TestCategoryTreeFlat(t *testing.T) {
-	smartphone := map[string]any{"id": 10, "name": "Смартфон"}
-	twoChamber := map[string]any{"id": 30, "name": "Двухкамерный"}
-
 	tree := map[string]any{"result": []any{
-		categoryNode(1, "Электроника", nil, []any{smartphone}),
-		categoryNode(2, "Бытовая техника",
-			[]any{categoryNode(21, "Холодильники", nil, []any{twoChamber})},
-			nil),
+		categoryNode(1, "Электроника", []any{
+			typeLeaf(10, "Смартфон"),
+			typeLeaf(11, "Планшет"),
+		}),
+		// Вложенная категория: у "Бытовая техника" id 2, у дочерней
+		// "Холодильники" — свой id 21, под которым и лежат типы.
+		categoryNode(2, "Бытовая техника", []any{
+			categoryNode(21, "Холодильники", []any{
+				typeLeaf(30, "Двухкамерный"),
+			}),
+		}),
 	}}
 
 	_, server, closeFn := fakeOzon(t, ModeReadOnly, treeServer(tree))
@@ -55,7 +68,7 @@ func TestCategoryTreeFlat(t *testing.T) {
 		t.Fatalf("дерево не должно падать: %s", body)
 	}
 
-	// Обе категории и оба типа видны, в плоском виде.
+	// Тип привязывается к категории-родителю, которая несёт id.
 	for _, want := range []string{
 		"1 | 10 | Электроника — Смартфон",
 		"21 | 30 | Бытовая техника / Холодильники — Двухкамерный",
@@ -71,12 +84,12 @@ func TestCategoryTreeFlat(t *testing.T) {
 
 func TestCategoryTreeQueryFilters(t *testing.T) {
 	tree := map[string]any{"result": []any{
-		categoryNode(1, "Электроника", nil, []any{
-			map[string]any{"id": 10, "name": "Смартфон"},
-			map[string]any{"id": 11, "name": "Планшет"},
+		categoryNode(1, "Электроника", []any{
+			typeLeaf(10, "Смартфон"),
+			typeLeaf(11, "Планшет"),
 		}),
-		categoryNode(2, "Бытовая техника", nil, []any{
-			map[string]any{"id": 30, "name": "Холодильник"},
+		categoryNode(2, "Бытовая техника", []any{
+			typeLeaf(30, "Холодильник"),
 		}),
 	}}
 
@@ -98,9 +111,48 @@ func TestCategoryTreeQueryFilters(t *testing.T) {
 	}
 }
 
+func TestCategoryTreeRealShape(t *testing.T) {
+	// Точная форма, которую вернул Ozon: верхний узел без своего id,
+	// его дети несут description_category_id, а типы лежат внутри
+	// этих детей листьями с type_id/type_name.
+	tree := map[string]any{"result": []any{
+		map[string]any{
+			// верхний узел: только название, без description_category_id
+			"category_name": "Аптека",
+			"children": []any{
+				map[string]any{
+					"category_name":           "Сопутствующие товары",
+					"description_category_id": 200001537,
+					"disabled":                false,
+					"children": []any{
+						typeLeaf(97221, "Контейнер для зубных протезов, капы"),
+						typeLeaf(91828, "Таблетница"),
+					},
+				},
+			},
+		},
+	}}
+
+	_, server, closeFn := fakeOzon(t, ModeReadOnly, treeServer(tree))
+	defer closeFn()
+
+	body, isErr := callTool(t, server, "ozon_category_tree", map[string]any{
+		"language": "RU",
+	})
+	if isErr {
+		t.Fatalf("дерево не должно падать: %s", body)
+	}
+	if !strings.Contains(body, "200001537 | 97221 | Аптека / Сопутствующие товары — Контейнер для зубных протезов, капы") {
+		t.Errorf("тип должен привязаться к id родительской категории:\n%s", body)
+	}
+	if !strings.Contains(body, "200001537 | 91828 | Аптека / Сопутствующие товары — Таблетница") {
+		t.Errorf("второй тип той же категории не найден:\n%s", body)
+	}
+}
+
 func TestCategoryTreeRaw(t *testing.T) {
 	tree := map[string]any{"result": []any{
-		categoryNode(1, "Электроника", nil, []any{map[string]any{"id": 10, "name": "Смартфон"}}),
+		categoryNode(1, "Электроника", []any{typeLeaf(10, "Смартфон")}),
 	}}
 
 	_, server, closeFn := fakeOzon(t, ModeReadOnly, treeServer(tree))
