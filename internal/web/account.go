@@ -341,7 +341,7 @@ func (w *Web) passwordChange(rw http.ResponseWriter, r *request) {
 	}
 	hash, err := secure.HashPassword(next)
 	if errors.Is(err, secure.ErrShortPassword) {
-		w.renderAccount(rw, r, http.StatusBadRequest, "", "Новый пароль короче 10 символов.", nil)
+		w.renderAccount(rw, r, http.StatusBadRequest, "", "Новый пароль короче 8 символов.", nil)
 		return
 	}
 	if err != nil {

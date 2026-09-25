@@ -77,7 +77,7 @@ func (w *Web) signup(rw http.ResponseWriter, r *http.Request) {
 	}
 	hash, err := secure.HashPassword(password)
 	if errors.Is(err, secure.ErrShortPassword) {
-		fail("Пароль короче 10 символов: он защищает доступ к вашему магазину.")
+		fail("Пароль короче 8 символов: он защищает доступ к вашему магазину.")
 		return
 	}
 	if err != nil {

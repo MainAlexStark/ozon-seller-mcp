@@ -394,7 +394,7 @@ func TestDuplicateSignupAndShortPassword(t *testing.T) {
 	if code != http.StatusBadRequest || !strings.Contains(page, "уже зарегистрирован") {
 		t.Fatalf("повторная регистрация: %d", code)
 	}
-	code, _, _ = b.post("/signup", url.Values{"email": {pgtest.Email("short")}, "password": {"короткий"}, "password2": {"короткий"}})
+	code, _, _ = b.post("/signup", url.Values{"email": {pgtest.Email("short")}, "password": {"корот"}, "password2": {"корот"}})
 	if code != http.StatusBadRequest {
 		t.Fatalf("короткий пароль принят: %d", code)
 	}

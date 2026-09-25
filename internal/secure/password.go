@@ -30,10 +30,10 @@ const (
 )
 
 // MinPasswordLen — минимальная длина пароля пользователя.
-const MinPasswordLen = 10
+const MinPasswordLen = 8
 
 // ErrShortPassword — пароль короче MinPasswordLen.
-var ErrShortPassword = errors.New("пароль короче 10 символов: он защищает доступ к магазину, возьмите длиннее")
+var ErrShortPassword = errors.New("пароль короче 8 символов: он защищает доступ к магазину, возьмите длиннее")
 
 // HashPassword считает хеш пароля.
 func HashPassword(password string) (string, error) {

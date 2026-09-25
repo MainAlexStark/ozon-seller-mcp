@@ -105,7 +105,7 @@ func setDisabled(email string, disabled bool) {
 // Пароль читается со stdin, а не из аргумента: аргументы видны любому
 // пользователю машины через ps и оседают в истории оболочки.
 func resetPassword(email string) {
-	fmt.Fprint(os.Stderr, "Новый пароль (от 10 символов): ")
+	fmt.Fprint(os.Stderr, "Новый пароль (от 8 символов): ")
 	sc := bufio.NewScanner(os.Stdin)
 	if !sc.Scan() {
 		fatal("пароль не прочитан")

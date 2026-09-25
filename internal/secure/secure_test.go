@@ -45,7 +45,7 @@ func TestBadSecretKey(t *testing.T) {
 }
 
 func TestPasswordHash(t *testing.T) {
-	if _, err := HashPassword("короткий"); err != ErrShortPassword {
+	if _, err := HashPassword("корот"); err != ErrShortPassword {
 		t.Fatalf("короткий пароль: %v", err)
 	}
 	h, err := HashPassword("достаточно-длинный")
