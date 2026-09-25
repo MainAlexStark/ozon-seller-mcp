@@ -1,69 +1,105 @@
 package oauth
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 )
 
-const testPassword = "очень-длинный-пароль-владельца"
+// fakeAccounts — пользователи и магазины для тестов. Вошедший
+// пользователь определяется cookie uid.
+type fakeAccounts struct {
+	users map[string]User
+	shops map[int64][]Shop
+}
 
-// PBKDF2 намеренно медленный — в этом его смысл. Но считать его заново
-// в каждом тесте значит платить эту цену два десятка раз: прогон пакета
-// растягивался с секунды до сорока. Хеш один и тот же, считаем однажды.
-var testPasswordHash = sync.OnceValue(func() string {
-	h, err := HashPassword(testPassword)
+func (f *fakeAccounts) CurrentUser(r *http.Request) (User, bool) {
+	c, err := r.Cookie("uid")
 	if err != nil {
-		panic(err)
+		return User{}, false
 	}
-	return h
-})
+	u, ok := f.users[c.Value]
+	return u, ok
+}
+
+func (f *fakeAccounts) Shops(_ context.Context, userID int64) ([]Shop, error) {
+	return f.shops[userID], nil
+}
+
+func (f *fakeAccounts) LoginURL(next string) string { return "/login?next=" + url.QueryEscape(next) }
+func (f *fakeAccounts) AddShopURL(next string) string {
+	return "/account/shops/new?next=" + url.QueryEscape(next)
+}
 
 // harness — сервер авторизации на настоящем HTTP.
 type harness struct {
-	srv    *httptest.Server
-	oauth  *Server
-	client *http.Client
+	srv      *httptest.Server
+	oauth    *Server
+	client   *http.Client
+	accounts *fakeAccounts
 }
 
 func newHarness(t *testing.T) *harness {
 	t.Helper()
 
-	store, err := NewStore("") // только в памяти
-	if err != nil {
-		t.Fatal(err)
-	}
 	mux := http.NewServeMux()
 	httpSrv := httptest.NewServer(mux)
 	t.Cleanup(httpSrv.Close)
 
+	accounts := &fakeAccounts{
+		users: map[string]User{
+			"1": {ID: 1, Email: "alex@example.com"},
+			"2": {ID: 2, Email: "other@example.com"},
+			"3": {ID: 3, Email: "noshops@example.com"},
+		},
+		shops: map[int64][]Shop{
+			1: {{ID: 10, Name: "Мой магазин", ClientID: "111"}, {ID: 11, Name: "Второй", ClientID: "112"}},
+			2: {{ID: 20, Name: "Чужой магазин", ClientID: "222"}},
+		},
+	}
+
 	o, err := New(Config{
-		Issuer:       httpSrv.URL,
-		ResourceURL:  httpSrv.URL + "/mcp",
-		PasswordHash: testPasswordHash(),
-		Store:        store,
+		Issuer:      httpSrv.URL,
+		ResourceURL: httpSrv.URL + "/mcp",
+		Store:       NewMemoryStore(),
+		Accounts:    accounts,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	o.Mount(mux)
 
+	jar, _ := cookiejar.New(nil)
 	// Редиректы не следуем: нам нужно прочитать сам Location.
 	client := &http.Client{
+		Jar: jar,
 		CheckRedirect: func(*http.Request, []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
 	}
 
-	return &harness{srv: httpSrv, oauth: o, client: client}
+	h := &harness{srv: httpSrv, oauth: o, client: client, accounts: accounts}
+	h.loginAs("1")
+	return h
+}
+
+// loginAs подменяет вошедшего пользователя ("" — выйти).
+func (h *harness) loginAs(uid string) {
+	u, _ := url.Parse(h.srv.URL)
+	c := &http.Cookie{Name: "uid", Value: uid, Path: "/"}
+	if uid == "" {
+		c.MaxAge = -1
+	}
+	h.client.Jar.SetCookies(u, []*http.Cookie{c})
 }
 
 func (h *harness) getJSON(t *testing.T, path string) map[string]any {
@@ -155,7 +191,7 @@ func (h *harness) consent(t *testing.T, clientID, redirectURI, challenge, scope 
 	form := url.Values{
 		"session":    {sessionID},
 		"action":     {"allow"},
-		"password":   {testPassword},
+		"shop":       {"10"},
 		"scope_read": {"on"},
 	}
 	if allowWrite {
@@ -291,18 +327,21 @@ func TestFullAuthorizationCodeFlow(t *testing.T) {
 		t.Error("при offline_access должен выдаваться refresh_token")
 	}
 
-	validated, err := h.oauth.Validate(access)
+	validated, err := h.oauth.Validate(context.Background(), access)
 	if err != nil {
 		t.Fatalf("выданный токен не проходит проверку: %v", err)
 	}
 	if !validated.HasScope(ScopeWrite) {
 		t.Error("подтверждена запись, но её нет в токене")
 	}
+	if validated.UserID != 1 || validated.ShopID != 10 {
+		t.Errorf("токен привязан не к тому: %+v", validated.Subject)
+	}
 }
 
-func TestOwnerCanNarrowScopesAtConsent(t *testing.T) {
-	// Смысл экрана согласия: решает владелец, а не клиент. Клиент
-	// просит запись, владелец её не даёт — токен выходит без неё.
+func TestUserCanNarrowScopesAtConsent(t *testing.T) {
+	// Смысл экрана согласия: решает пользователь, а не клиент. Клиент
+	// просит запись, пользователь её не даёт — токен выходит без неё.
 	h := newHarness(t)
 	const redirectURI = "https://claude.ai/api/mcp/auth_callback"
 
@@ -312,7 +351,7 @@ func TestOwnerCanNarrowScopesAtConsent(t *testing.T) {
 	code, _ := h.consent(t, clientID, redirectURI, pkce(verifier), ScopeRead+" "+ScopeWrite, false)
 	tok := h.exchange(t, clientID, code, verifier, redirectURI)
 
-	validated, err := h.oauth.Validate(tok["access_token"].(string))
+	validated, err := h.oauth.Validate(context.Background(), tok["access_token"].(string))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -324,13 +363,10 @@ func TestOwnerCanNarrowScopesAtConsent(t *testing.T) {
 	}
 }
 
-func TestWrongPasswordDoesNotIssueCode(t *testing.T) {
-	h := newHarness(t)
-	const redirectURI = "https://claude.ai/api/mcp/auth_callback"
-
-	clientID := h.register(t, redirectURI)
+// openConsent открывает экран согласия и возвращает ответ.
+func (h *harness) openConsent(t *testing.T, clientID, redirectURI string) (*http.Response, string) {
+	t.Helper()
 	verifier := "verifier-1234567890123456789012345678901234567"
-
 	authURL := h.srv.URL + "/oauth/authorize?" + url.Values{
 		"response_type":         {"code"},
 		"client_id":             {clientID},
@@ -340,27 +376,110 @@ func TestWrongPasswordDoesNotIssueCode(t *testing.T) {
 		"scope":                 {ScopeRead},
 	}.Encode()
 
-	resp, _ := h.client.Get(authURL)
+	resp, err := h.client.Get(authURL)
+	if err != nil {
+		t.Fatal(err)
+	}
 	page, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
-	sessionID := extractSession(t, string(page))
+	return resp, string(page)
+}
 
-	resp2, err := h.client.PostForm(h.srv.URL+"/oauth/authorize", url.Values{
+func TestAnonymousIsSentToLoginAndBack(t *testing.T) {
+	h := newHarness(t)
+	const redirectURI = "https://claude.ai/api/mcp/auth_callback"
+	clientID := h.register(t, redirectURI)
+
+	h.loginAs("")
+	resp, _ := h.openConsent(t, clientID, redirectURI)
+	if resp.StatusCode != http.StatusFound {
+		t.Fatalf("без входа ожидался редирект, получен %d", resp.StatusCode)
+	}
+	loc, _ := url.Parse(resp.Header.Get("Location"))
+	if loc.Path != "/login" {
+		t.Fatalf("редирект не на вход: %s", loc)
+	}
+	next := loc.Query().Get("next")
+	if !strings.HasPrefix(next, "/oauth/authorize?") || !strings.Contains(next, clientID) {
+		t.Fatalf("после входа не вернуться к согласию: next=%q", next)
+	}
+}
+
+func TestUserWithoutShopsIsSentToAddShop(t *testing.T) {
+	h := newHarness(t)
+	const redirectURI = "https://claude.ai/api/mcp/auth_callback"
+	clientID := h.register(t, redirectURI)
+
+	h.loginAs("3")
+	resp, _ := h.openConsent(t, clientID, redirectURI)
+	if resp.StatusCode != http.StatusFound {
+		t.Fatalf("ожидался редирект, получен %d", resp.StatusCode)
+	}
+	if loc := resp.Header.Get("Location"); !strings.HasPrefix(loc, "/account/shops/new") {
+		t.Fatalf("редирект не на подключение магазина: %s", loc)
+	}
+}
+
+func TestConsentListsOnlyOwnShops(t *testing.T) {
+	h := newHarness(t)
+	const redirectURI = "https://claude.ai/api/mcp/auth_callback"
+	clientID := h.register(t, redirectURI)
+
+	_, page := h.openConsent(t, clientID, redirectURI)
+	if !strings.Contains(page, "Мой магазин") || !strings.Contains(page, "Второй") {
+		t.Fatal("на согласии нет магазинов пользователя")
+	}
+	if strings.Contains(page, "Чужой магазин") {
+		t.Fatal("на согласии виден чужой магазин")
+	}
+}
+
+func TestForeignShopDoesNotIssueCode(t *testing.T) {
+	// Номер магазина из формы — это ввод: подставив чужой, нельзя
+	// получить доступ к чужому кабинету.
+	h := newHarness(t)
+	const redirectURI = "https://claude.ai/api/mcp/auth_callback"
+	clientID := h.register(t, redirectURI)
+
+	_, page := h.openConsent(t, clientID, redirectURI)
+	sessionID := extractSession(t, page)
+
+	resp, err := h.client.PostForm(h.srv.URL+"/oauth/authorize", url.Values{
 		"session":    {sessionID},
 		"action":     {"allow"},
-		"password":   {"неверный"},
+		"shop":       {"20"},
 		"scope_read": {"on"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp2.Body.Close()
-
-	if resp2.StatusCode == http.StatusFound {
-		t.Fatal("с неверным паролем код выдаваться не должен")
+	resp.Body.Close()
+	if resp.StatusCode == http.StatusFound {
+		t.Fatal("с чужим магазином код выдаваться не должен")
 	}
-	if resp2.StatusCode != http.StatusUnauthorized {
-		t.Errorf("ожидался 401, получен %d", resp2.StatusCode)
+}
+
+func TestOtherUserCannotSubmitSession(t *testing.T) {
+	h := newHarness(t)
+	const redirectURI = "https://claude.ai/api/mcp/auth_callback"
+	clientID := h.register(t, redirectURI)
+
+	_, page := h.openConsent(t, clientID, redirectURI)
+	sessionID := extractSession(t, page)
+
+	h.loginAs("2")
+	resp, err := h.client.PostForm(h.srv.URL+"/oauth/authorize", url.Values{
+		"session":    {sessionID},
+		"action":     {"allow"},
+		"shop":       {"20"},
+		"scope_read": {"on"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("чужая сессия согласия: ожидался 403, получен %d", resp.StatusCode)
 	}
 }
 
@@ -460,11 +579,17 @@ func TestRefreshRotatesAndInvalidatesOldTokens(t *testing.T) {
 
 	// Старый access обязан умереть вместе с выдачей, иначе отзыв
 	// ничего не отзывает.
-	if _, err := h.oauth.Validate(oldAccess); err == nil {
+	if _, err := h.oauth.Validate(context.Background(), oldAccess); err == nil {
 		t.Error("старый access-токен должен становиться недействительным после обновления")
 	}
-	if _, err := h.oauth.Validate(second["access_token"].(string)); err != nil {
-		t.Errorf("новый access-токен должен работать: %v", err)
+	renewed, err := h.oauth.Validate(context.Background(), second["access_token"].(string))
+	if err != nil {
+		t.Fatalf("новый access-токен должен работать: %v", err)
+	}
+	// Магазин переживает обновление: иначе через час подключение
+	// молча переключилось бы в никуда.
+	if renewed.ShopID != 10 || renewed.UserID != 1 {
+		t.Errorf("после обновления потерялась привязка: %+v", renewed.Subject)
 	}
 }
 
@@ -527,7 +652,7 @@ func TestRevokeKillsWholeGrant(t *testing.T) {
 	}
 	resp.Body.Close()
 
-	if _, err := h.oauth.Validate(access); err == nil {
+	if _, err := h.oauth.Validate(context.Background(), access); err == nil {
 		t.Error("отозванный access-токен всё ещё действует")
 	}
 
@@ -567,21 +692,22 @@ func TestTokenForOtherResourceRejected(t *testing.T) {
 	// личности открывал бы все сервисы сразу.
 	h := newHarness(t)
 
-	store, _ := NewStore("")
+	store := NewMemoryStore()
 	access := "чужой-токен"
-	err := store.SaveTokens(access, &Token{
+	err := store.SaveTokens(context.Background(), &Token{
+		TokenHash: hashToken(access),
 		ClientID:  "someone",
 		Scopes:    []string{ScopeRead},
 		Resource:  "https://другой-сервис.example/mcp",
 		ExpiresAt: timeNowPlusHour(),
 		GrantID:   "g1",
-	}, "", nil)
+	}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	h.oauth.store = store
-	if _, err := h.oauth.Validate(access); err == nil {
+	if _, err := h.oauth.Validate(context.Background(), access); err == nil {
 		t.Fatal("токен для другого ресурса должен отклоняться")
 	}
 }

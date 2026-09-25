@@ -1,0 +1,130 @@
+{{define "title"}}Кабинет{{end}}
+{{define "cardclass"}}wide{{end}}
+{{define "body"}}
+{{$csrf := .CSRF}}
+<div class="top">
+  <span>{{.Email}} · тариф {{.Plan}} · вызовов за 30 дней: {{.Calls30d}}</span>
+  <form method="post" action="/logout"><input type="hidden" name="csrf" value="{{$csrf}}">
+    <button class="linkbtn" type="submit">Выйти</button></form>
+</div>
+
+{{if .Flash}}<div class="ok">{{.Flash}}</div>{{end}}
+{{if .Error}}<div class="err">{{.Error}}</div>{{end}}
+
+{{if .NewToken}}
+<div class="warn"><b>Токен «{{.NewTokenFor}}» выпущен.</b> Скопируйте его сейчас — больше он показан не будет.
+<span class="copy mono">{{.NewToken}}</span>
+Передавайте его в заголовке <span class="mono">Authorization: Bearer …</span> на адрес MCP.</div>
+{{end}}
+
+<h1>Подключение к Claude</h1>
+<p class="sub">В Claude: <b>Настройки → Коннекторы → Добавить свой коннектор</b>, адрес:</p>
+<span class="copy mono">{{.ResourceURL}}</span>
+<p class="hint">При подключении откроется эта же страница сервиса: выберите магазин и права.
+Одно подключение — один магазин.</p>
+
+<h2>Магазины</h2>
+{{if .Shops}}
+<div class="scroll"><table class="stack">
+<tr><th>Название</th><th>Client-Id</th><th>Ключ</th><th>Проверка</th><th></th></tr>
+{{range .Shops}}
+<tr>
+  <td>{{.Name}}</td>
+  <td class="mono">{{.OzonClientID}}</td>
+  <td class="mono">{{.APIKeyHint}}</td>
+  <td>{{if .CheckError}}<span class="err-text">✗ {{.CheckError}}</span>{{else if .CheckedAgo}}✓ {{.CheckedAgo}}{{else}}—{{end}}</td>
+  <td>
+    <form method="post" action="/account/shops/{{.ID}}/check"><input type="hidden" name="csrf" value="{{$csrf}}">
+      <button class="small deny" type="submit">Проверить</button></form>
+    <details><summary>Обновить ключ</summary>
+      <form method="post" action="/account/shops/{{.ID}}/key" class="inline">
+        <input type="hidden" name="csrf" value="{{$csrf}}">
+        <input type="password" name="api_key" autocomplete="off" placeholder="новый API-ключ" required>
+        <button class="small allow" type="submit">Сохранить</button></form>
+    </details>
+    <details><summary>Удалить</summary>
+      <form method="post" action="/account/shops/{{.ID}}/delete"><input type="hidden" name="csrf" value="{{$csrf}}">
+        <p class="hint">Ключ будет удалён, все подключения Claude и токены к этому магазину перестанут работать.</p>
+        <button class="small danger" type="submit">Удалить магазин</button></form>
+    </details>
+  </td>
+</tr>
+{{end}}
+</table></div>
+{{else}}
+<p class="sub">Магазинов пока нет.</p>
+{{end}}
+<p class="hint"><a href="/account/shops/new">+ Подключить магазин</a></p>
+
+<h2>Подключённые приложения</h2>
+{{if .Grants}}
+<div class="scroll"><table class="stack">
+<tr><th>Приложение</th><th>Магазин</th><th>Права</th><th>Действует до</th><th></th></tr>
+{{range .Grants}}
+<tr>
+  <td>{{.ClientName}}</td>
+  <td>{{.ShopName}}</td>
+  <td>{{if has .Scopes "ozon:write"}}чтение и запись{{else}}чтение{{end}}</td>
+  <td>{{.ExpiresAt.Format "02.01.2006"}}</td>
+  <td><form method="post" action="/account/grants/{{.GrantID}}/revoke"><input type="hidden" name="csrf" value="{{$csrf}}">
+    <button class="small danger" type="submit">Отозвать</button></form></td>
+</tr>
+{{end}}
+</table></div>
+{{else}}
+<p class="sub">Пока ни одного. Добавьте сервер в Claude по адресу выше.</p>
+{{end}}
+
+<h2>API-токены для автоматизации</h2>
+<p class="hint">Для скриптов и сервисов, которые не могут пройти экран согласия. Бессрочные — отзывайте ненужные.</p>
+{{if .Tokens}}
+<div class="scroll"><table class="stack">
+<tr><th>Название</th><th>Магазин</th><th>Права</th><th>Использован</th><th></th></tr>
+{{range .Tokens}}
+<tr>
+  <td>{{.Name}}</td>
+  <td>{{.ShopName}}</td>
+  <td>{{if has .Scopes "write"}}чтение и запись{{else}}чтение{{end}}</td>
+  <td>{{if .LastUsedAt}}{{.LastUsedAt.Format "02.01.2006 15:04"}}{{else}}ни разу{{end}}</td>
+  <td><form method="post" action="/account/tokens/{{.ID}}/delete"><input type="hidden" name="csrf" value="{{$csrf}}">
+    <button class="small danger" type="submit">Отозвать</button></form></td>
+</tr>
+{{end}}
+</table></div>
+{{end}}
+{{if .Shops}}
+<details><summary>Выпустить токен</summary>
+<form method="post" action="/account/tokens">
+  <input type="hidden" name="csrf" value="{{$csrf}}">
+  <label class="field"><span>Название</span><input type="text" name="name" maxlength="60" placeholder="PrintPipe"></label>
+  <label class="field"><span>Магазин</span></label>
+  {{range $i, $s := .Shops}}
+  <label class="check"><input type="radio" name="shop" value="{{$s.ID}}" {{if eq $i 0}}checked{{end}}>
+    <span><b>{{$s.Name}}</b><small>Client-Id {{$s.OzonClientID}}</small></span></label>
+  {{end}}
+  <label class="check"><input type="checkbox" name="write">
+    <span><b>Разрешить запись</b><small>Цены, остатки, карточки. Без неё токен только читает.</small></span></label>
+  <div class="actions"><button class="allow" type="submit">Выпустить</button></div>
+</form>
+</details>
+{{end}}
+
+<h2>Учётная запись</h2>
+<details><summary>Сменить пароль</summary>
+<form method="post" action="/account/password">
+  <input type="hidden" name="csrf" value="{{$csrf}}">
+  <label class="field"><span>Текущий пароль</span><input type="password" name="current" autocomplete="current-password" required></label>
+  <label class="field"><span>Новый пароль (от 10 символов)</span><input type="password" name="new" autocomplete="new-password" minlength="10" required></label>
+  <label class="field"><span>Новый пароль ещё раз</span><input type="password" name="new2" autocomplete="new-password" minlength="10" required></label>
+  <div class="actions"><button class="allow" type="submit">Сменить</button></div>
+</form>
+</details>
+<details><summary>Удалить учётную запись</summary>
+<form method="post" action="/account/delete">
+  <input type="hidden" name="csrf" value="{{$csrf}}">
+  <p class="hint">Удаляются ключи всех магазинов, подключения и токены. Отменить нельзя.</p>
+  <label class="field"><span>Пароль для подтверждения</span><input type="password" name="password" autocomplete="current-password" required></label>
+  <div class="actions"><button class="danger" type="submit">Удалить навсегда</button></div>
+</form>
+</details>
+{{end}}

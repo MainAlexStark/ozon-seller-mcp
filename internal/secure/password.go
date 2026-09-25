@@ -1,10 +1,11 @@
-package oauth
+package secure
 
 import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -12,7 +13,7 @@ import (
 	"crypto/pbkdf2"
 )
 
-// Пароль владельца хранится не в открытом виде, а как PBKDF2-хеш.
+// Пароль пользователя хранится не в открытом виде, а как PBKDF2-хеш.
 //
 // Простой SHA-256 здесь не годится: он считается миллиардами в секунду,
 // и перебор короткого пароля занял бы минуты. PBKDF2 с большим числом
@@ -28,10 +29,16 @@ const (
 	pbkdf2SaltLength = 16
 )
 
+// MinPasswordLen — минимальная длина пароля пользователя.
+const MinPasswordLen = 10
+
+// ErrShortPassword — пароль короче MinPasswordLen.
+var ErrShortPassword = errors.New("пароль короче 10 символов: он защищает доступ к магазину, возьмите длиннее")
+
 // HashPassword считает хеш пароля.
 func HashPassword(password string) (string, error) {
-	if len(password) < 12 {
-		return "", errConfig("пароль короче 12 символов: он защищает доступ к магазину, возьмите длиннее")
+	if len([]rune(password)) < MinPasswordLen {
+		return "", ErrShortPassword
 	}
 
 	salt := make([]byte, pbkdf2SaltLength)

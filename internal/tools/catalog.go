@@ -195,9 +195,9 @@ func (r *Registry) RegisterCatalog() {
 				err   error
 			)
 			if a.Wait {
-				items, err = r.client.WaitImport(ctx, a.TaskID, 5*time.Minute)
+				items, err = r.clientFor(ctx).WaitImport(ctx, a.TaskID, 5*time.Minute)
 			} else {
-				items, err = r.client.ImportInfo(ctx, a.TaskID)
+				items, err = r.clientFor(ctx).ImportInfo(ctx, a.TaskID)
 			}
 			if err != nil {
 				return "", decorate(err)

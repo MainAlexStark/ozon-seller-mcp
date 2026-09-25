@@ -1,6 +1,6 @@
-# Развёртывание на VPS: сервер и TLS одной командой.
+# Развёртывание на VPS: сервис, база и TLS одной командой.
 #
-#   sudo docker compose up -d --build
+#   ./deploy.sh ozon-mcp.example.com
 #
 
 name: ozon-seller-mcp
@@ -19,6 +19,12 @@ services:
     env_file:
       - ./deploy/ozon-seller-mcp.env
 
+    # Сервер сам ждёт базу до минуты, но стартовать раньше неё
+    # незачем: в журнал сыпались бы бессмысленные ошибки подключения.
+    depends_on:
+      postgres:
+        condition: service_healthy
+
     # Наружу порт не выставлен: снаружи виден только Caddy, а он ходит
     # сюда по внутренней сети compose. Для отладки с самой машины можно
     # временно раскомментировать:
@@ -28,17 +34,6 @@ services:
     expose:
       - "8571"
 
-    # Хранилище OAuth: подключённые устройства и их токены. Именованный
-    # том, а не каталог с хоста, — том наследует владельца от образа,
-    # и сервер под nonroot может в него писать; на каталоге с хоста
-    # пришлось бы вручную выставлять владельца, а забытый chown выглядит
-    # как «сервер не стартует» без внятной причины.
-    #
-    # Том переживает пересборку. Без него каждое обновление отключало бы
-    # все устройства разом.
-    volumes:
-      - oauth:/var/lib/ozon-seller-mcp
-
     logging:
       driver: json-file
       options:
@@ -47,10 +42,45 @@ services:
 
     networks:
       - mcp-network
+      - internal
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: ozon-seller-mcp-postgres
+    restart: unless-stopped
+
+    # Отдельный файл, а не общий env: базе незачем видеть мастер-ключ
+    # шифрования ключей магазинов.
+    env_file:
+      - ./deploy/postgres.env
+
+    # Данные пользователей и зашифрованные ключи магазинов. Том
+    # переживает пересборку и обновление; резервная копия —
+    # ./deploy.sh backup.
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    # Только внутренняя сеть: база не видна ни Caddy, ни соседним
+    # MCP-серверам в mcp-network, ни тем более снаружи.
+    networks:
+      - internal
 
 volumes:
-  oauth:
+  pgdata:
 
 networks:
   mcp-network:
     external: true
+  internal:

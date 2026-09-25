@@ -84,7 +84,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		resp["token_endpoint_auth_method"] = "client_secret_post"
 	}
 
-	if err := s.store.SaveClient(client); err != nil {
+	if err := s.store.SaveClient(r.Context(), client); err != nil {
 		writeOAuthError(w, http.StatusInternalServerError, "server_error", "не удалось сохранить клиента")
 		return
 	}

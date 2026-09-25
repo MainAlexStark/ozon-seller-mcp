@@ -14,15 +14,14 @@
 // отзываются поштучно, а согласие даётся на конкретный набор прав.
 //
 // Сервер играет обе роли сразу — и resource server, и authorization
-// server. Для одного продавца это правильный размен: отдельный
-// провайдер личности здесь только добавил бы деталей, способных
-// сломаться.
-//
-// Пользователь ровно один — владелец магазина. Поэтому «вход» это
-// проверка одного пароля, а не система учётных записей.
+// server. Пользователей и их магазины он не хранит сам: кто вошёл
+// и какие у него магазины, сообщает веб-кабинет через Accounts.
+// Экран согласия — это «под какой учётной записью, к какому магазину
+// и с какими правами подключить это приложение».
 package oauth
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -57,6 +56,31 @@ const (
 	LoginSessionTTL = 15 * time.Minute
 )
 
+// Accounts — сведения о пользователях, которые даёт веб-кабинет.
+type Accounts interface {
+	// CurrentUser — кто вошёл в этом браузере (по cookie кабинета).
+	CurrentUser(r *http.Request) (User, bool)
+	// Shops — магазины пользователя, из которых выбирается один.
+	Shops(ctx context.Context, userID int64) ([]Shop, error)
+	// LoginURL — страница входа, после которой вернуться на next.
+	LoginURL(next string) string
+	// AddShopURL — страница подключения магазина с возвратом на next.
+	AddShopURL(next string) string
+}
+
+// User — вошедший пользователь.
+type User struct {
+	ID    int64
+	Email string
+}
+
+// Shop — магазин пользователя, как он показывается на согласии.
+type Shop struct {
+	ID       int64
+	Name     string
+	ClientID string
+}
+
 // Config — настройки сервера авторизации.
 type Config struct {
 	// Issuer — внешний адрес сервера без завершающего слэша,
@@ -70,30 +94,17 @@ type Config struct {
 	// в один слэш ломает подключение.
 	ResourceURL string
 
-	// PasswordHash — хеш пароля владельца (см. password.go).
-	//
-	// Задавать его вручную нужно только тогда, когда открытый пароль
-	// не должен попадать в окружение сервера даже в файле с правами 600.
-	PasswordHash string
-
-	// Password — пароль владельца открытым текстом.
-	//
-	// Используется, когда хеш не задан: сервер считает его сам при
-	// старте. Это стоит около четверти секунды один раз за запуск
-	// и снимает с развёртывания отдельный шаг «сгенерируйте хеш
-	// и вставьте строку» — шаг, который нельзя выполнить одной
-	// командой и на котором чаще всего и застревают.
-	Password string
-
-	Store  *Store
-	Logger *slog.Logger
+	Store    Storage
+	Accounts Accounts
+	Logger   *slog.Logger
 }
 
 // Server — сервер авторизации.
 type Server struct {
-	cfg    Config
-	store  *Store
-	logger *slog.Logger
+	cfg      Config
+	store    Storage
+	accounts Accounts
+	logger   *slog.Logger
 }
 
 // New создаёт сервер авторизации.
@@ -101,22 +112,11 @@ func New(cfg Config) (*Server, error) {
 	if cfg.Issuer == "" {
 		return nil, errConfig("не задан внешний адрес сервера (OZON_PUBLIC_URL)")
 	}
-	// Хеш из открытого пароля считаем сами: это единственное место,
-	// где он нужен, и считать его заранее человеку незачем.
-	if cfg.PasswordHash == "" && cfg.Password != "" {
-		hash, err := HashPassword(cfg.Password)
-		if err != nil {
-			return nil, err
-		}
-		cfg.PasswordHash = hash
-	}
-	if cfg.PasswordHash == "" {
-		return nil, errConfig("не задан пароль владельца: положите его в OZON_OWNER_PASSWORD " +
-			"(сервер посчитает хеш сам) либо, если открытый пароль в окружении нежелателен, " +
-			"посчитайте хеш через --hash-password и положите в OZON_OWNER_PASSWORD_HASH")
-	}
 	if cfg.Store == nil {
 		return nil, errConfig("не задано хранилище")
+	}
+	if cfg.Accounts == nil {
+		return nil, errConfig("не задан источник пользователей")
 	}
 
 	cfg.Issuer = strings.TrimSuffix(cfg.Issuer, "/")
@@ -129,7 +129,7 @@ func New(cfg Config) (*Server, error) {
 		logger = slog.Default()
 	}
 
-	return &Server{cfg: cfg, store: cfg.Store, logger: logger}, nil
+	return &Server{cfg: cfg, store: cfg.Store, accounts: cfg.Accounts, logger: logger}, nil
 }
 
 // Issuer возвращает адрес издателя токенов.

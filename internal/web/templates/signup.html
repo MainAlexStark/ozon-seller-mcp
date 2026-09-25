@@ -1,0 +1,17 @@
+{{define "title"}}Регистрация{{end}}
+{{define "body"}}
+<h1>Регистрация</h1>
+<p class="sub">Учётная запись сервиса. Магазин Ozon подключите на следующем шаге.</p>
+{{if .Error}}<div class="err">{{.Error}}</div>{{end}}
+<form method="post" action="/signup">
+<input type="hidden" name="next" value="{{.Next}}">
+<label class="field"><span>Почта</span>
+  <input type="email" name="email" value="{{.Email}}" autocomplete="email" required autofocus></label>
+<label class="field"><span>Пароль (от 10 символов)</span>
+  <input type="password" name="password" autocomplete="new-password" minlength="10" required></label>
+<label class="field"><span>Пароль ещё раз</span>
+  <input type="password" name="password2" autocomplete="new-password" minlength="10" required></label>
+<div class="actions"><button type="submit" class="allow">Создать учётную запись</button></div>
+</form>
+<p class="hint">Уже есть учётная запись? <a href="/login?next={{.Next}}">Войти</a></p>
+{{end}}

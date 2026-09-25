@@ -99,7 +99,7 @@ func (r *Registry) RegisterFinance() {
 					break
 				}
 
-				accruals, partial, err := fetchDay(ctx, r.client, day.Format(dayLayout))
+				accruals, partial, err := fetchDay(ctx, r.clientFor(ctx), day.Format(dayLayout))
 				if err != nil {
 					// Часть периода уже посчитана — выбрасывать её
 					// вместе с ошибкой незачем.
@@ -156,14 +156,14 @@ func (r *Registry) RegisterFinance() {
 				if cursor, _ := args["last_id"].(string); cursor != "" {
 					body["last_id"] = cursor
 				}
-				page, err := r.client.Call(ctx, ozon.PathFinanceAccrualByDay, body)
+				page, err := r.clientFor(ctx).Call(ctx, ozon.PathFinanceAccrualByDay, body)
 				if err != nil {
 					return "", decorate(err)
 				}
 				return safety.TrimResponse(formatJSON(page)), nil
 			}
 
-			accruals, partial, err := fetchDay(ctx, r.client, day)
+			accruals, partial, err := fetchDay(ctx, r.clientFor(ctx), day)
 			if err != nil {
 				return "", decorate(err)
 			}

@@ -13,3 +13,6 @@ go.work.sum
 # Секреты развёртывания: их пишет deploy.sh
 deploy/*.env
 deploy/kubeconfig
+
+# Резервные копии базы: ./deploy.sh backup
+backups/

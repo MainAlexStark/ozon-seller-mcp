@@ -16,22 +16,14 @@ RUN CGO_ENABLED=0 go build -trimpath \
       -ldflags "-s -w -X main.version=${VERSION}" \
       -o /out/ozon-seller-mcp ./cmd/ozon-seller-mcp
 
-# Пустой каталог под хранилище OAuth. Он создаётся здесь, а не в
-# compose, ради прав: том Docker наследует владельца от каталога
-# в образе. Без этого сервер под nonroot не смог бы создать в нём
-# oauth.json, и запуск падал бы на «хранилище OAuth: permission denied».
-RUN mkdir -p /data
-
 
 # Запуск
 FROM gcr.io/distroless/static-debian12:nonroot
 
 COPY --from=build /out/ozon-seller-mcp /ozon-seller-mcp
 
-# 65532 — uid nonroot в distroless. Числом, а не именем: имя пришлось бы
-# разрешать через /etc/passwd целевого образа.
-COPY --from=build --chown=65532:65532 /data /var/lib/ozon-seller-mcp
-
+# Состояния на диске у сервера нет: пользователи, магазины и токены
+# живут в PostgreSQL. Поэтому ни томов, ни прав на каталоги.
 USER nonroot:nonroot
 
 EXPOSE 8571

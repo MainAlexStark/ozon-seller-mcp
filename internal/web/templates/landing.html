@@ -1,0 +1,18 @@
+{{define "title"}}Ozon Seller MCP — Claude для продавца Ozon{{end}}
+{{define "body"}}
+<h1>Ozon Seller MCP</h1>
+<p class="sub">Подключите свой магазин Ozon к Claude: каталог, цены, остатки,
+заказы, финансы, отзывы и акции — прямо из чата.</p>
+
+<div class="row"><span>1.</span><span>Зарегистрируйтесь и вставьте API-ключ из кабинета продавца</span></div>
+<div class="row"><span>2.</span><span>Добавьте в Claude коннектор с адресом <span class="mono">{{.ResourceURL}}</span></span></div>
+<div class="row"><span>3.</span><span>Подтвердите доступ: к какому магазину и с какими правами</span></div>
+
+<p class="hint">Ключ хранится зашифрованным. По умолчанию подключение только читает —
+право менять цены и остатки вы выдаёте явно, и его можно отозвать в любой момент.</p>
+
+<div class="actions">
+  <a class="btn deny" href="/login">Войти</a>
+  {{if .SignupOpen}}<a class="btn allow" href="/signup">Зарегистрироваться</a>{{end}}
+</div>
+{{end}}

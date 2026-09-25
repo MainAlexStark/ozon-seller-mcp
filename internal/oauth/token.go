@@ -1,6 +1,7 @@
 package oauth
 
 import (
+	"context"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
@@ -41,7 +42,7 @@ func (s *Server) exchangeCode(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Код извлекается и сразу удаляется: он одноразовый.
-	authCode, err := s.store.TakeCode(code)
+	authCode, err := s.store.TakeCode(r.Context(), hashToken(code))
 	if err != nil {
 		writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "код неизвестен или истёк")
 		return
@@ -70,7 +71,7 @@ func (s *Server) exchangeCode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.issue(w, authCode.ClientID, authCode.Scopes, authCode.Resource)
+	s.issue(w, r, authCode.ClientID, authCode.Scopes, authCode.Resource, authCode.Subject)
 }
 
 // refresh обновляет пару токенов.
@@ -83,7 +84,7 @@ func (s *Server) refresh(w http.ResponseWriter, r *http.Request) {
 
 	// Извлечение удаляет старый refresh — это ротация, которой OAuth 2.1
 	// требует для публичных клиентов.
-	rt, err := s.store.TakeRefreshToken(token)
+	rt, err := s.store.TakeRefreshToken(r.Context(), hashToken(token))
 	if err != nil {
 		// Именно invalid_grant: по этому коду Claude поймёт, что надо
 		// заново пройти согласие. На другой код он будет повторять
@@ -110,16 +111,16 @@ func (s *Server) refresh(w http.ResponseWriter, r *http.Request) {
 
 	// Старая выдача уничтожается целиком: оставить прежний access
 	// означало бы, что отзыв ничего не отзывает.
-	if _, err := s.store.RevokeGrant(rt.GrantID); err != nil {
+	if _, err := s.store.RevokeGrant(r.Context(), rt.GrantID); err != nil {
 		writeOAuthError(w, http.StatusInternalServerError, "server_error", "не удалось обновить выдачу")
 		return
 	}
 
-	s.issue(w, rt.ClientID, scopes, rt.Resource)
+	s.issue(w, r, rt.ClientID, scopes, rt.Resource, rt.Subject)
 }
 
 // issue выпускает пару токенов и отдаёт ответ.
-func (s *Server) issue(w http.ResponseWriter, clientID string, scopes []string, resource string) {
+func (s *Server) issue(w http.ResponseWriter, r *http.Request, clientID string, scopes []string, resource string, subj Subject) {
 	access, err := randomToken()
 	if err != nil {
 		writeOAuthError(w, http.StatusInternalServerError, "server_error", "не удалось выдать токен")
@@ -133,6 +134,8 @@ func (s *Server) issue(w http.ResponseWriter, clientID string, scopes []string, 
 
 	now := time.Now()
 	at := &Token{
+		TokenHash: hashToken(access),
+		Subject:   subj,
 		ClientID:  clientID,
 		Scopes:    scopes,
 		Resource:  resource,
@@ -161,6 +164,8 @@ func (s *Server) issue(w http.ResponseWriter, clientID string, scopes []string, 
 			return
 		}
 		rt = &RefreshToken{
+			TokenHash: hashToken(refresh),
+			Subject:   subj,
 			ClientID:  clientID,
 			Scopes:    scopes,
 			Resource:  resource,
@@ -170,7 +175,7 @@ func (s *Server) issue(w http.ResponseWriter, clientID string, scopes []string, 
 		resp["refresh_token"] = refresh
 	}
 
-	if err := s.store.SaveTokens(access, at, refresh, rt); err != nil {
+	if err := s.store.SaveTokens(r.Context(), at, rt); err != nil {
 		writeOAuthError(w, http.StatusInternalServerError, "server_error", "не удалось сохранить токен")
 		return
 	}
@@ -189,8 +194,8 @@ func (s *Server) handleRevoke(w http.ResponseWriter, r *http.Request) {
 	}
 
 	token := r.PostFormValue("token")
-	if grantID, ok := s.store.GrantIDByToken(token); ok {
-		n, err := s.store.RevokeGrant(grantID)
+	if grantID, ok := s.store.GrantIDByToken(r.Context(), hashToken(token)); ok {
+		n, err := s.store.RevokeGrant(r.Context(), grantID)
 		if err != nil {
 			writeOAuthError(w, http.StatusInternalServerError, "server_error", "не удалось отозвать")
 			return
@@ -211,8 +216,11 @@ var ErrInvalidToken = errors.New("oauth: недействительный ток
 // Проверка audience обязательна: сервер не должен принимать токен,
 // выпущенный для другого ресурса, даже если он подлинный. Без этого
 // токен, выданный соседнему сервису, открывал бы и этот.
-func (s *Server) Validate(token string) (*Token, error) {
-	t, err := s.store.AccessToken(token)
+func (s *Server) Validate(ctx context.Context, token string) (*Token, error) {
+	if token == "" {
+		return nil, ErrInvalidToken
+	}
+	t, err := s.store.AccessToken(ctx, hashToken(token))
 	if err != nil {
 		return nil, ErrInvalidToken
 	}

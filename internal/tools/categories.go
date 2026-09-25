@@ -90,7 +90,7 @@ func (r *Registry) RegisterCategories() {
 				a.Format = TreeFormatFlat
 			}
 
-			tree, err := r.client.Call(ctx, ozon.PathCategoryTree, map[string]any{"language": a.Language})
+			tree, err := r.clientFor(ctx).Call(ctx, ozon.PathCategoryTree, map[string]any{"language": a.Language})
 			if err != nil {
 				return "", decorate(err)
 			}

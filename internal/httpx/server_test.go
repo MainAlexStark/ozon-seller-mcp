@@ -1,50 +1,168 @@
 package httpx
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/MainAlexStark/ozon-seller-mcp/internal/mcp"
+	"github.com/MainAlexStark/ozon-seller-mcp/internal/oauth"
+	"github.com/MainAlexStark/ozon-seller-mcp/internal/secure"
 	"github.com/MainAlexStark/ozon-seller-mcp/internal/tools"
 	"github.com/MainAlexStark/ozon-seller-mcp/ozon"
 )
 
 const (
-	readToken  = "r000000000000000000000000000000000000000000000000000000000000000"
-	writeToken = "w000000000000000000000000000000000000000000000000000000000000000"
+	readToken  = "osm_read0000000000000000000000000000000000000000000"
+	writeToken = "osm_write000000000000000000000000000000000000000000"
+	// otherShopToken — токен второго пользователя к его магазину.
+	otherShopToken = "osm_other000000000000000000000000000000000000000000"
 )
 
-// testServer поднимает подставной Ozon и сетевой MCP поверх него.
-func testServer(t *testing.T, ozonHandler http.HandlerFunc) (*httptest.Server, func()) {
+// fakeShops — магазины теста: у каждого свой подставной Ozon.
+type fakeShops struct {
+	clients map[[2]int64]*ozon.Client
+}
+
+func (f *fakeShops) Client(_ context.Context, userID, shopID int64) (*ozon.Client, error) {
+	c, ok := f.clients[[2]int64{userID, shopID}]
+	if !ok {
+		return nil, errors.New("нет такого магазина")
+	}
+	return c, nil
+}
+
+type usageRecord struct {
+	user, shop int64
+	tool       string
+	failed     bool
+}
+
+// harness — сетевой MCP поверх подставных магазинов.
+type harness struct {
+	front *httptest.Server
+	oauth *oauth.Server
+	store *oauth.MemoryStore
+
+	mu    sync.Mutex
+	usage []usageRecord
+}
+
+func (h *harness) records() []usageRecord {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]usageRecord(nil), h.usage...)
+}
+
+// newHarness поднимает MCP с двумя пользователями: пользователь 1 с
+// магазином 10 (ozonHandler) и пользователь 2 с магазином 20
+// (otherHandler, может быть nil).
+func newHarness(t *testing.T, ozonHandler, otherHandler http.HandlerFunc) *harness {
 	t.Helper()
 
 	fakeOzon := httptest.NewServer(ozonHandler)
-	client := ozon.New("cid", "key", ozon.WithBaseURL(fakeOzon.URL))
+	t.Cleanup(fakeOzon.Close)
+	if otherHandler == nil {
+		otherHandler = func(http.ResponseWriter, *http.Request) {}
+	}
+	otherOzon := httptest.NewServer(otherHandler)
+	t.Cleanup(otherOzon.Close)
 
+	shops := &fakeShops{clients: map[[2]int64]*ozon.Client{
+		{1, 10}: ozon.New("111", "key-1", ozon.WithBaseURL(fakeOzon.URL)),
+		{2, 20}: ozon.New("222", "key-2", ozon.WithBaseURL(otherOzon.URL)),
+	}}
+
+	// В сервисном режиме у реестра нет своего клиента: магазин
+	// приходит только из запроса.
 	m := mcp.NewServer("test", "0.0.1")
-	reg := tools.NewRegistry(client, tools.DefaultSafety(), m)
+	reg := tools.NewRegistry(nil, tools.DefaultSafety(), m)
 	reg.RegisterCatalog()
 	reg.RegisterPricing()
 	reg.RegisterAnalytics()
 	reg.RegisterFBO()
 	reg.RegisterDiagnostics()
 
-	auth := Auth{Static: NewStaticAuth(readToken, writeToken)}
+	h := &harness{store: oauth.NewMemoryStore()}
 
-	s, err := NewServer(m, auth, Config{Safety: tools.DefaultSafety()})
+	apiTokens := func(_ context.Context, token string) (Principal, bool) {
+		switch token {
+		case readToken:
+			return Principal{UserID: 1, ShopID: 10, Scope: ScopeRead}, true
+		case writeToken:
+			return Principal{UserID: 1, ShopID: 10, Scope: ScopeWrite}, true
+		case otherShopToken:
+			return Principal{UserID: 2, ShopID: 20, Scope: ScopeRead}, true
+		}
+		return Principal{}, false
+	}
+
+	mux := http.NewServeMux()
+	front := httptest.NewServer(mux)
+	t.Cleanup(front.Close)
+
+	o, err := oauth.New(oauth.Config{Issuer: front.URL, Store: h.store, Accounts: noAccounts{}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	front := httptest.NewServer(s.Handler())
+	h.oauth = o
 
-	return front, func() {
-		front.Close()
-		fakeOzon.Close()
+	usage := func(user, shop int64, tool string, failed bool) {
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		h.usage = append(h.usage, usageRecord{user, shop, tool, failed})
 	}
+
+	s, err := NewServer(m, Auth{OAuth: o, APITokens: apiTokens}, shops, usage,
+		Config{Safety: tools.DefaultSafety()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux.Handle("/", s.Handler())
+	h.front = front
+	return h
+}
+
+// issueOAuth кладёт в хранилище действующий OAuth-токен.
+func (h *harness) issueOAuth(t *testing.T, userID, shopID int64, scopes ...string) string {
+	t.Helper()
+	token := "oauth-" + strings.Repeat("t", 40) + fmt.Sprint(userID, shopID, len(scopes))
+	err := h.store.SaveTokens(context.Background(), &oauth.Token{
+		TokenHash: secure.HashToken(token),
+		ClientID:  "claude",
+		Scopes:    scopes,
+		Resource:  h.oauth.ResourceURL(),
+		IssuedAt:  time.Now(),
+		ExpiresAt: time.Now().Add(time.Hour),
+		GrantID:   "g-" + token,
+		Subject:   oauth.Subject{UserID: userID, ShopID: shopID},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return token
+}
+
+type noAccounts struct{}
+
+func (noAccounts) CurrentUser(*http.Request) (oauth.User, bool)       { return oauth.User{}, false }
+func (noAccounts) Shops(context.Context, int64) ([]oauth.Shop, error) { return nil, nil }
+func (noAccounts) LoginURL(string) string                             { return "/login" }
+func (noAccounts) AddShopURL(string) string                           { return "/account" }
+
+// testServer — прежняя обёртка для тестов, которым нужен один магазин.
+func testServer(t *testing.T, ozonHandler http.HandlerFunc) (*httptest.Server, func()) {
+	t.Helper()
+	h := newHarness(t, ozonHandler, nil)
+	return h.front, func() {}
 }
 
 // rpc отправляет JSON-RPC сообщение по HTTP.
@@ -374,5 +492,114 @@ func TestHealthNeedsNoToken(t *testing.T) {
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("healthz должен отвечать без токена, получен %d", resp.StatusCode)
+	}
+}
+
+func TestOAuthTokenReachesItsOwnShop(t *testing.T) {
+	// Главное свойство сервиса: запрос уходит в Ozon с ключами того
+	// магазина, к которому выдан токен, и ни в какой другой.
+	var mine, other bool
+	h := newHarness(t,
+		func(w http.ResponseWriter, r *http.Request) {
+			mine = true
+			if r.Header.Get("Client-Id") != "111" {
+				t.Errorf("в Ozon ушёл чужой Client-Id: %s", r.Header.Get("Client-Id"))
+			}
+			_, _ = w.Write([]byte(`{"result":{"items":[],"total":0}}`))
+		},
+		func(w http.ResponseWriter, r *http.Request) {
+			other = true
+			_, _ = w.Write([]byte(`{"result":{"items":[],"total":0}}`))
+		})
+
+	token := h.issueOAuth(t, 1, 10, oauth.ScopeRead)
+	resp, body := rpc(t, h.front.URL, "/mcp", token, "tools/call",
+		toolCall("ozon_product_list", map[string]any{}))
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("статус %d: %s", resp.StatusCode, body)
+	}
+	if isErr, text := isToolError(t, body); isErr {
+		t.Fatalf("инструмент вернул ошибку: %s", text)
+	}
+	if !mine || other {
+		t.Fatalf("запрос ушёл не в тот магазин: свой=%v чужой=%v", mine, other)
+	}
+}
+
+func TestOtherUsersTokenReachesOnlyTheirShop(t *testing.T) {
+	var mine, other bool
+	h := newHarness(t,
+		func(w http.ResponseWriter, r *http.Request) { mine = true },
+		func(w http.ResponseWriter, r *http.Request) {
+			other = true
+			_, _ = w.Write([]byte(`{"result":{"items":[],"total":0}}`))
+		})
+
+	_, body := rpc(t, h.front.URL, "/mcp", otherShopToken, "tools/call",
+		toolCall("ozon_product_list", map[string]any{}))
+	if isErr, text := isToolError(t, body); isErr {
+		t.Fatalf("инструмент вернул ошибку: %s", text)
+	}
+	if mine || !other {
+		t.Fatalf("запрос второго пользователя ушёл не туда: первый=%v второй=%v", mine, other)
+	}
+}
+
+func TestOAuthReadScopeCannotWrite(t *testing.T) {
+	var touched bool
+	h := newHarness(t, func(w http.ResponseWriter, r *http.Request) { touched = true }, nil)
+
+	token := h.issueOAuth(t, 1, 10, oauth.ScopeRead)
+	_, body := rpc(t, h.front.URL, "/mcp", token, "tools/call",
+		toolCall("ozon_prices_update", map[string]any{
+			"prices": []map[string]any{{"offer_id": "pp-1", "price": "100"}},
+		}))
+	if isErr, _ := isToolError(t, body); !isErr || touched {
+		t.Fatal("OAuth-токен без ozon:write не должен допускаться к записи")
+	}
+}
+
+func TestDeletedShopGets403NotLoop(t *testing.T) {
+	// Токен жив, а магазина нет. 401 здесь заставил бы Claude
+	// бесконечно обновлять токен.
+	h := newHarness(t, func(http.ResponseWriter, *http.Request) {}, nil)
+
+	token := h.issueOAuth(t, 1, 99, oauth.ScopeRead)
+	resp, _ := rpc(t, h.front.URL, "/mcp", token, "tools/list", nil)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("к удалённому магазину ожидался 403, получен %d", resp.StatusCode)
+	}
+}
+
+func TestUsageIsRecordedPerShop(t *testing.T) {
+	h := newHarness(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"result":{"items":[],"total":0}}`))
+	}, nil)
+
+	rpc(t, h.front.URL, "/mcp", readToken, "tools/call", toolCall("ozon_product_list", map[string]any{}))
+	rpc(t, h.front.URL, "/mcp", readToken, "tools/call",
+		toolCall("ozon_prices_update", map[string]any{
+			"prices": []map[string]any{{"offer_id": "pp-1", "price": "100"}},
+		}))
+	rpc(t, h.front.URL, "/mcp", readToken, "tools/list", nil)
+
+	got := h.records()
+	if len(got) != 2 {
+		t.Fatalf("учтено %d вызовов, ожидалось 2 (tools/list не вызов инструмента): %+v", len(got), got)
+	}
+	if got[0] != (usageRecord{1, 10, "ozon_product_list", false}) {
+		t.Errorf("первый вызов: %+v", got[0])
+	}
+	if got[1] != (usageRecord{1, 10, "ozon_prices_update", true}) {
+		t.Errorf("отказ в записи должен учитываться как ошибка: %+v", got[1])
+	}
+}
+
+func TestRootIsNotMCP(t *testing.T) {
+	// MCP живёт только на /mcp; корень — страницы сервиса.
+	h := newHarness(t, func(http.ResponseWriter, *http.Request) {}, nil)
+	resp, _ := rpc(t, h.front.URL, "/", readToken, "tools/list", nil)
+	if resp.StatusCode == http.StatusOK {
+		t.Fatal("корень не должен обслуживать MCP")
 	}
 }

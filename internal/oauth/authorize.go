@@ -4,8 +4,11 @@ import (
 	"html/template"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
+
+	"github.com/MainAlexStark/ozon-seller-mcp/internal/ui"
 )
 
 // handleAuthorize — начало потока: показываем форму входа и согласия.
@@ -20,7 +23,7 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	clientID := q.Get("client_id")
 	redirectURI := q.Get("redirect_uri")
 
-	client, err := s.store.Client(clientID)
+	client, err := s.store.Client(r.Context(), clientID)
 	if err != nil {
 		// Клиент неизвестен — перенаправлять некуда, показываем страницу.
 		s.renderError(w, http.StatusBadRequest,
@@ -69,6 +72,25 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		requested = []string{ScopeRead}
 	}
 
+	// Кто подключает. Не вошёл — на вход и обратно сюда же: весь
+	// запрос авторизации переживает круг через форму входа в адресе.
+	user, ok := s.accounts.CurrentUser(r)
+	if !ok {
+		http.Redirect(w, r, s.accounts.LoginURL(r.URL.RequestURI()), http.StatusFound)
+		return
+	}
+
+	shops, err := s.accounts.Shops(r.Context(), user.ID)
+	if err != nil {
+		s.redirectError(w, r, redirectURI, q.Get("state"), "server_error", "не удалось прочитать магазины")
+		return
+	}
+	// Без магазина подключать нечего: сначала ключ Ozon, потом сюда.
+	if len(shops) == 0 {
+		http.Redirect(w, r, s.accounts.AddShopURL(r.URL.RequestURI()), http.StatusFound)
+		return
+	}
+
 	sessionID, err := randomToken()
 	if err != nil {
 		s.redirectError(w, r, redirectURI, q.Get("state"), "server_error", "не удалось начать сессию")
@@ -83,25 +105,27 @@ func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		Scopes:        requested,
 		Resource:      resource,
 		CodeChallenge: challenge,
+		UserID:        user.ID,
 		ExpiresAt:     time.Now().Add(LoginSessionTTL),
 	}
-	if err := s.store.SaveSession(sess); err != nil {
+	if err := s.store.SaveSession(r.Context(), sess); err != nil {
 		s.redirectError(w, r, redirectURI, q.Get("state"), "server_error", "не удалось сохранить сессию")
 		return
 	}
 
-	s.renderConsent(w, client, sess, "")
+	s.renderConsent(w, client, sess, user, shops, "")
 }
 
-// handleAuthorizeSubmit — владелец ввёл пароль и выбрал права.
+// handleAuthorizeSubmit — пользователь выбрал магазин и права.
 func (s *Server) handleAuthorizeSubmit(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
 		s.renderError(w, http.StatusBadRequest, "Не разобрана форма", err.Error())
 		return
 	}
 
+	ctx := r.Context()
 	sessionID := r.PostFormValue("session")
-	sess, err := s.store.Session(sessionID)
+	sess, err := s.store.Session(ctx, sessionID)
 	if err != nil {
 		s.renderError(w, http.StatusBadRequest,
 			"Время истекло",
@@ -109,29 +133,52 @@ func (s *Server) handleAuthorizeSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	client, err := s.store.Client(sess.ClientID)
+	client, err := s.store.Client(ctx, sess.ClientID)
 	if err != nil {
 		s.renderError(w, http.StatusBadRequest, "Неизвестное приложение", "Клиент не найден.")
 		return
 	}
 
-	// Отказ владельца — обычный исход, а не ошибка.
-	if r.PostFormValue("action") != "allow" {
-		_, _ = s.store.TakeSession(sessionID)
-		s.redirectError(w, r, sess.RedirectURI, sess.State, "access_denied", "владелец отклонил подключение")
+	// Подтвердить может только тот, кто открыл форму. Номер сессии
+	// в скрытом поле непредсказуем, но сверка с cookie закрывает и тот
+	// случай, когда он всё же утёк: чужим браузером его не отправить.
+	user, ok := s.accounts.CurrentUser(r)
+	if !ok || user.ID != sess.UserID {
+		s.renderError(w, http.StatusForbidden,
+			"Сессия не ваша",
+			"Эта страница подтверждения открыта под другой учётной записью. Начните подключение в Claude заново.")
 		return
 	}
 
-	if !VerifyPassword(s.cfg.PasswordHash, r.PostFormValue("password")) {
-		s.logger.Warn("неверный пароль при подтверждении доступа",
-			"client", client.Name, "remote", r.RemoteAddr)
-		// Сессию не трогаем: человек мог просто опечататься.
-		s.renderConsent(w, client, sess, "Неверный пароль.")
+	// Отказ — обычный исход, а не ошибка.
+	if r.PostFormValue("action") != "allow" {
+		_, _ = s.store.TakeSession(ctx, sessionID)
+		s.redirectError(w, r, sess.RedirectURI, sess.State, "access_denied", "пользователь отклонил подключение")
+		return
+	}
+
+	shops, err := s.accounts.Shops(ctx, user.ID)
+	if err != nil {
+		s.renderError(w, http.StatusInternalServerError, "Ошибка", "Не удалось прочитать магазины.")
+		return
+	}
+
+	// Магазин сверяется со списком самого пользователя: номер из формы —
+	// это ввод, и чужой номер не должен давать доступ к чужому магазину.
+	shopID, _ := strconv.ParseInt(r.PostFormValue("shop"), 10, 64)
+	var shop *Shop
+	for i := range shops {
+		if shops[i].ID == shopID {
+			shop = &shops[i]
+		}
+	}
+	if shop == nil {
+		s.renderConsent(w, client, sess, user, shops, "Выберите магазин.")
 		return
 	}
 
 	// Права берём из галочек, а не из того, что запросил клиент:
-	// смысл экрана согласия в том, что решает владелец. Снятая галочка
+	// смысл экрана согласия в том, что решает пользователь. Снятая галочка
 	// записи — это токен, которым магазин изменить нельзя.
 	granted := []string{}
 	if r.PostFormValue("scope_read") == "on" {
@@ -141,7 +188,7 @@ func (s *Server) handleAuthorizeSubmit(w http.ResponseWriter, r *http.Request) {
 		granted = append(granted, ScopeWrite)
 	}
 	if len(granted) == 0 {
-		s.renderConsent(w, client, sess, "Выберите хотя бы одно право, иначе подключать нечего.")
+		s.renderConsent(w, client, sess, user, shops, "Выберите хотя бы одно право, иначе подключать нечего.")
 		return
 	}
 	// offline_access отдаём, если его просили: без него Claude будет
@@ -150,7 +197,7 @@ func (s *Server) handleAuthorizeSubmit(w http.ResponseWriter, r *http.Request) {
 		granted = append(granted, ScopeOfflineAccess)
 	}
 
-	if _, err := s.store.TakeSession(sessionID); err != nil {
+	if _, err := s.store.TakeSession(ctx, sessionID); err != nil {
 		s.renderError(w, http.StatusBadRequest, "Время истекло", "Начните подключение заново.")
 		return
 	}
@@ -161,7 +208,9 @@ func (s *Server) handleAuthorizeSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err = s.store.SaveCode(code, &AuthCode{
+	err = s.store.SaveCode(ctx, &AuthCode{
+		CodeHash:      hashToken(code),
+		Subject:       Subject{UserID: user.ID, ShopID: shop.ID},
 		ClientID:      sess.ClientID,
 		RedirectURI:   sess.RedirectURI,
 		Scopes:        granted,
@@ -177,6 +226,8 @@ func (s *Server) handleAuthorizeSubmit(w http.ResponseWriter, r *http.Request) {
 	s.logger.Info("доступ разрешён",
 		"client", client.Name,
 		"client_id", client.ID,
+		"user", user.ID,
+		"shop", shop.ID,
 		"scopes", granted)
 
 	u, _ := url.Parse(sess.RedirectURI)
@@ -242,11 +293,15 @@ type consentView struct {
 	RedirectHost string
 	IsLoopback   bool
 	WantsWrite   bool
+	Email        string
+	Shops        []Shop
+	Selected     int64
+	Style        template.CSS
 	Error        string
 }
 
 // renderConsent показывает экран согласия.
-func (s *Server) renderConsent(w http.ResponseWriter, client *Client, sess *LoginSession, errMsg string) {
+func (s *Server) renderConsent(w http.ResponseWriter, client *Client, sess *LoginSession, user User, shops []Shop, errMsg string) {
 	host := sess.RedirectURI
 	if u, err := url.Parse(sess.RedirectURI); err == nil {
 		host = u.Host
@@ -261,13 +316,18 @@ func (s *Server) renderConsent(w http.ResponseWriter, client *Client, sess *Logi
 		RedirectHost: host,
 		IsLoopback:   isLoopbackRedirect(client.RedirectURIs),
 		WantsWrite:   containsScope(sess.Scopes, ScopeWrite),
+		Email:        user.Email,
+		Shops:        shops,
+		Style:        ui.Style,
 		Error:        errMsg,
 	}
+	if len(shops) > 0 {
+		view.Selected = shops[0].ID
+	}
 
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-store")
+	ui.NoCache(w)
 	if errMsg != "" {
-		w.WriteHeader(http.StatusUnauthorized)
+		w.WriteHeader(http.StatusBadRequest)
 	}
 	_ = consentTemplate.Execute(w, view)
 }
@@ -290,61 +350,13 @@ func isLoopbackRedirect(uris []string) bool {
 }
 
 func (s *Server) renderError(w http.ResponseWriter, status int, title, message string) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.WriteHeader(status)
-	_ = errorTemplate.Execute(w, map[string]string{"Title": title, "Message": message})
+	ui.RenderMessage(w, status, title, message)
 }
-
-const pageStyle = `
-:root{color-scheme:light dark}
-*{box-sizing:border-box}
-body{font:16px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
-  margin:0;padding:40px 20px;background:#f4f5f6;color:#15181b;display:flex;
-  justify-content:center;align-items:flex-start;min-height:100vh}
-@media(prefers-color-scheme:dark){body{background:#121518;color:#e2e6ea}}
-.card{background:#fff;max-width:460px;width:100%;padding:28px;border-radius:10px;
-  border:1px solid #d8dde1}
-@media(prefers-color-scheme:dark){.card{background:#191d21;border-color:#2b3238}}
-h1{font-size:20px;margin:0 0 4px}
-.sub{color:#5b6670;font-size:14px;margin:0 0 20px}
-@media(prefers-color-scheme:dark){.sub{color:#98a3ad}}
-.row{display:flex;justify-content:space-between;gap:12px;padding:9px 0;
-  border-bottom:1px solid #eceef0;font-size:14px}
-@media(prefers-color-scheme:dark){.row{border-color:#232930}}
-.row span:first-child{color:#5b6670}
-@media(prefers-color-scheme:dark){.row span:first-child{color:#98a3ad}}
-.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
-fieldset{border:0;padding:0;margin:22px 0 0}
-legend{font-size:12px;letter-spacing:.08em;text-transform:uppercase;
-  color:#5b6670;padding:0 0 8px}
-@media(prefers-color-scheme:dark){legend{color:#98a3ad}}
-label.check{display:flex;gap:10px;align-items:flex-start;padding:10px;
-  border:1px solid #d8dde1;border-radius:8px;margin-bottom:8px;cursor:pointer}
-@media(prefers-color-scheme:dark){label.check{border-color:#2b3238}}
-label.check b{display:block;font-weight:600}
-label.check small{color:#5b6670}
-@media(prefers-color-scheme:dark){label.check small{color:#98a3ad}}
-input[type=password]{width:100%;padding:10px 12px;font-size:15px;
-  border:1px solid #c5ccd2;border-radius:8px;background:#fff;color:inherit}
-@media(prefers-color-scheme:dark){input[type=password]{background:#12161a;border-color:#2b3238}}
-.actions{display:flex;gap:10px;margin-top:22px}
-button{flex:1;padding:11px;font-size:15px;font-weight:600;border-radius:8px;
-  border:1px solid transparent;cursor:pointer}
-button.allow{background:#1f6feb;color:#fff}
-button.deny{background:transparent;border-color:#c5ccd2;color:inherit}
-@media(prefers-color-scheme:dark){button.deny{border-color:#2b3238}}
-.warn{background:#fdf1e7;border:1px solid #e8b98c;color:#7a4510;
-  padding:11px 13px;border-radius:8px;font-size:13.5px;margin:16px 0 0}
-@media(prefers-color-scheme:dark){.warn{background:#33220f;border-color:#6b4a1e;color:#e6b878}}
-.err{background:#fdeaea;border:1px solid #e5a0a0;color:#8a2020;
-  padding:11px 13px;border-radius:8px;font-size:14px;margin:0 0 16px}
-@media(prefers-color-scheme:dark){.err{background:#341b1b;border-color:#6b3030;color:#e79a9a}}
-`
 
 var consentTemplate = template.Must(template.New("consent").Parse(`<!doctype html>
 <html lang="ru"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Доступ к магазину Ozon</title><style>` + pageStyle + `</style></head>
+<title>Доступ к магазину Ozon</title><style>{{.Style}}</style></head>
 <body><div class="card">
 <h1>Разрешить доступ?</h1>
 <p class="sub">Приложение запрашивает доступ к вашему кабинету продавца Ozon.</p>
@@ -353,6 +365,7 @@ var consentTemplate = template.Must(template.New("consent").Parse(`<!doctype htm
 
 <div class="row"><span>Приложение</span><span>{{.ClientName}}</span></div>
 <div class="row"><span>Вернётся на</span><span class="mono">{{.RedirectHost}}</span></div>
+<div class="row"><span>Учётная запись</span><span>{{.Email}}</span></div>
 
 {{if .IsLoopback}}
 <div class="warn">Приложение возвращается на адрес вашего же компьютера.
@@ -364,6 +377,18 @@ var consentTemplate = template.Must(template.New("consent").Parse(`<!doctype htm
 <input type="hidden" name="session" value="{{.SessionID}}">
 
 <fieldset>
+<legend>Магазин</legend>
+{{$sel := .Selected}}
+{{range .Shops}}
+<label class="check">
+  <input type="radio" name="shop" value="{{.ID}}" {{if eq .ID $sel}}checked{{end}}>
+  <span><b>{{.Name}}</b><small>Client-Id {{.ClientID}}</small></span>
+</label>
+{{end}}
+<p class="hint"><a href="/account">Подключить другой магазин</a></p>
+</fieldset>
+
+<fieldset>
 <legend>Что разрешаем</legend>
 
 <label class="check">
@@ -372,15 +397,10 @@ var consentTemplate = template.Must(template.New("consent").Parse(`<!doctype htm
 </label>
 
 <label class="check">
-  <input type="checkbox" name="scope_write" {{if .WantsWrite}}{{end}}>
+  <input type="checkbox" name="scope_write">
   <span><b>Изменение</b><small>Создание и правка карточек, цены, остатки.
-  Телефону это обычно не нужно — оставьте выключенным.</small></span>
+  {{if .WantsWrite}}Приложение просит это право. {{end}}Телефону обычно не нужно — оставьте выключенным.</small></span>
 </label>
-</fieldset>
-
-<fieldset>
-<legend>Пароль владельца</legend>
-<input type="password" name="password" autocomplete="current-password" autofocus required>
 </fieldset>
 
 <div class="actions">
@@ -388,13 +408,4 @@ var consentTemplate = template.Must(template.New("consent").Parse(`<!doctype htm
   <button type="submit" name="action" value="allow" class="allow">Разрешить</button>
 </div>
 </form>
-</div></body></html>`))
-
-var errorTemplate = template.Must(template.New("error").Parse(`<!doctype html>
-<html lang="ru"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>{{.Title}}</title><style>` + pageStyle + `</style></head>
-<body><div class="card">
-<h1>{{.Title}}</h1>
-<p class="sub">{{.Message}}</p>
 </div></body></html>`))

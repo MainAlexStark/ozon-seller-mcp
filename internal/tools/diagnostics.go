@@ -118,9 +118,9 @@ func (r *Registry) RegisterDiagnostics() {
 				// задаётся переменной окружения, по HTTP — тем, какой
 				// токен вы прописали в этом клиенте.
 				b.WriteString("                         (запись запрещена: локально — OZON_ALLOW_WRITES,\n")
-				b.WriteString("                          по сети — использован токен только на чтение)\n")
+				b.WriteString("                          в сервисе — при подключении не выдано право «Изменение»)\n")
 			}
-			fmt.Fprintf(&b, "Client-Id:               %s\n", maskID(r.client.ClientID()))
+			fmt.Fprintf(&b, "Client-Id:               %s\n", maskID(r.clientFor(ctx).ClientID()))
 			fmt.Fprintf(&b, "Порог смены цены:        %.0f%%\n", safety.MaxPriceDeltaPct)
 			fmt.Fprintf(&b, "Позиций за одну запись:  %d\n", safety.MaxItemsPerWrite)
 			fmt.Fprintf(&b, "Потолок ответа:          %d байт\n", safety.MaxResponseBytes)
@@ -147,7 +147,7 @@ func (r *Registry) RegisterDiagnostics() {
 				wg.Add(1)
 				go func(i int, p probe) {
 					defer wg.Done()
-					results[i], errs[i] = runProbe(ctx, r.client, p)
+					results[i], errs[i] = runProbe(ctx, r.clientFor(ctx), p)
 				}(i, p)
 			}
 			wg.Wait()
@@ -155,7 +155,7 @@ func (r *Registry) RegisterDiagnostics() {
 			var b strings.Builder
 			b.WriteString("Проверка методов Ozon Seller API\n\n")
 
-			if px := r.client.Proxy(); px != "" {
+			if px := r.clientFor(ctx).Proxy(); px != "" {
 				fmt.Fprintf(&b, "Запросы идут через прокси: %s\n\n", px)
 			}
 

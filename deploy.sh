@@ -7,9 +7,10 @@
 #
 # Скрипт делает всё, что раньше приходилось делать руками: заводит сеть
 # docker, поднимает общий Caddy, вписывает домен в его Caddyfile,
-# придумывает пароль владельца и токены, поднимает сервер и дожидается,
-# пока тот ответит по HTTPS. Повторный запуск ничего не ломает: пароль
-# и токены не перевыпускаются, блок в Caddyfile заменяется на месте.
+# придумывает пароль базы и мастер-ключ шифрования, поднимает сервис
+# с PostgreSQL и дожидается, пока тот ответит по HTTPS. Повторный запуск
+# ничего не ломает: секреты не перевыпускаются, блок в Caddyfile
+# заменяется на месте.
 
 APP="ozon-seller-mcp"
 PREFIX="OZON"
@@ -17,13 +18,58 @@ PORT="8571"
 APP_DNS_HINT="(например ozon-mcp.example.com)"
 
 USAGE_EXTRA='
-Ключи Ozon спрашиваются один раз. Без диалога:
-  OZON_CLIENT_ID=… OZON_API_KEY=… ./deploy.sh ozon-mcp.example.com'
+Ключи Ozon скрипт не спрашивает: сервис многопользовательский, каждый
+пользователь подключает свой магазин в кабинете на https://<домен>.
 
-# prepare_extra — то, без чего именно этот сервер не поднимется.
+Сервисные команды:
+  ./deploy.sh backup      резервная копия базы в backups/
+  ./deploy.sh users       список пользователей'
+
+PG_ENV_FILE="deploy/postgres.env"
+
+# prepare_extra — то, без чего именно этот сервер не поднимется:
+# база и мастер-ключ шифрования ключей магазинов. Вызывается и при
+# обновлении — так обновление со старой однопользовательской версии
+# само получает базу.
 prepare_extra() {
-  ask_secret OZON_CLIENT_ID "Client-Id (Настройки → API-ключи в кабинете продавца)"
-  ask_secret OZON_API_KEY   "API-ключ"
+  [ -f "$PG_ENV_FILE" ] || cp "deploy/postgres.env.example" "$PG_ENV_FILE"
+  chmod 600 "$PG_ENV_FILE"
+
+  local pg_password
+  pg_password="$(sed -n 's/^POSTGRES_PASSWORD=//p' "$PG_ENV_FILE" | tail -1)"
+  if [ -z "$pg_password" ]; then
+    pg_password="$(gen_secret 24)"
+    sed -i "s|^POSTGRES_PASSWORD=.*|POSTGRES_PASSWORD=${pg_password}|" "$PG_ENV_FILE"
+    say "придуман пароль базы"
+  fi
+  env_set "${PREFIX}_DATABASE_URL" "postgres://ozon:${pg_password}@postgres:5432/ozon?sslmode=disable"
+
+  # Мастер-ключ придумывается один раз и никогда не перевыпускается:
+  # новый ключ сделал бы нечитаемыми ключи всех магазинов в базе.
+  if [ -z "$(env_get "${PREFIX}_SECRET_KEY")" ]; then
+    local key
+    if command -v openssl >/dev/null 2>&1; then
+      key="$(openssl rand -base64 32)"
+    else
+      key="$(head -c 32 /dev/urandom | base64 | tr -d '\n')"
+    fi
+    env_set "${PREFIX}_SECRET_KEY" "$key"
+    say "придуман мастер-ключ шифрования — сохраните копию: ./deploy.sh secrets"
+  fi
+  [ -n "$(env_get "${PREFIX}_SIGNUP")" ] || env_set "${PREFIX}_SIGNUP" "open"
+
+  # Остатки однопользовательской версии: в сервисе они ни на что не
+  # влияют, а пароль владельца в окружении только вводит в заблуждение.
+  local k
+  for k in OWNER_PASSWORD OWNER_PASSWORD_HASH TOKEN_READ TOKEN_WRITE OAUTH_STORE ALLOW_WRITES; do
+    if [ -n "$(env_get "${PREFIX}_${k}")" ]; then
+      env_set "${PREFIX}_${k}" ""
+    fi
+  done
+  if [ -n "$(env_get "${PREFIX}_CLIENT_ID")" ]; then
+    say "ВНИМАНИЕ: OZON_CLIENT_ID/OZON_API_KEY в ${ENV_FILE} больше не используются."
+    say "  Зарегистрируйтесь на https://${DOMAIN} и подключите магазин в кабинете."
+  fi
 }
 
 # ── общая часть: одинакова во всех MCP-серверах стандарта ────────────
@@ -241,14 +287,18 @@ compose_up() {
 print_secrets() {
   cat <<SECRETS
 
+  Сайт и кабинет:    https://${DOMAIN}
   Адрес для Claude:  https://${DOMAIN}/mcp
-  Пароль владельца:  $(env_get "${PREFIX}_OWNER_PASSWORD")
-  Токен на чтение:   $(env_get "${PREFIX}_TOKEN_READ")
-  Токен на запись:   $(env_get "${PREFIX}_TOKEN_WRITE")
+  Регистрация:       $(env_get "${PREFIX}_SIGNUP")
+  Мастер-ключ:       $(env_get "${PREFIX}_SECRET_KEY")
 
-Пароль вводится на экране согласия при подключении устройства.
-Токены нужны только автоматизации, которая не может пройти этот экран.
-Всё это лежит в ${ENV_FILE} (права 600) и печатается снова по
+Зарегистрируйтесь на сайте и подключите магазин — дальше Claude
+подключается по адресу выше.
+
+Мастер-ключом зашифрованы API-ключи всех магазинов. Сохраните его копию
+в менеджере паролей, ОТДЕЛЬНО от резервных копий базы: без него копия
+бесполезна, а вместе с ним — раскрывает ключи всех пользователей.
+Он лежит в ${ENV_FILE} (права 600) и печатается снова по
   ./deploy.sh secrets
 SECRETS
 }
@@ -266,19 +316,6 @@ cmd_install() {
 
   env_set "${PREFIX}_PUBLIC_URL" "https://${DOMAIN}"
   env_set "${PREFIX}_HTTP_ADDR" ""
-
-  # Пароль и токены придумываются один раз и потом не трогаются:
-  # перевыпуск отключил бы уже подключённые устройства.
-  [ -n "$(env_get "${PREFIX}_OWNER_PASSWORD")" ] || {
-    env_set "${PREFIX}_OWNER_PASSWORD" "$(gen_secret 12)"
-    say "придуман пароль владельца"
-  }
-  [ -n "$(env_get "${PREFIX}_TOKEN_READ")" ]  || env_set "${PREFIX}_TOKEN_READ"  "$(gen_secret 32)"
-  [ -n "$(env_get "${PREFIX}_TOKEN_WRITE")" ] || env_set "${PREFIX}_TOKEN_WRITE" "$(gen_secret 32)"
-
-  # Хеш пароля больше не нужен: сервер считает его сам из открытого
-  # пароля. Старую строку убираем, иначе она молча победит новый пароль.
-  env_set "${PREFIX}_OWNER_PASSWORD_HASH" ""
 
   prepare_extra
 
@@ -321,6 +358,14 @@ cmd_update() {
     say "уже последняя версия — пересобираю на всякий случай"
   fi
 
+  # Новая версия может требовать новых секретов (так было при переходе
+  # на сервис с базой) — дописываем недостающие, существующие не трогаем.
+  prepare_extra
+
+  # Перед обновлением — копия базы: миграции применяются на старте,
+  # и откатить код без отката данных можно не всегда.
+  cmd_backup || say "резервная копия не снялась — продолжаю (база могла ещё не существовать)"
+
   step "пересборка"
   compose_up
 
@@ -354,6 +399,22 @@ cmd_status() {
 }
 
 cmd_logs()    { $SUDO docker compose logs -f --tail 200; }
+
+# cmd_backup снимает дамп базы в backups/. Дамп содержит ключи магазинов
+# в зашифрованном виде — без мастер-ключа они не читаются, поэтому
+# храните дампы и мастер-ключ в разных местах.
+cmd_backup() {
+  $SUDO docker compose ps --status running postgres 2>/dev/null | grep -q postgres || return 1
+  mkdir -p backups
+  chmod 700 backups
+  local file
+  file="backups/ozon-$(date +%Y%m%d-%H%M%S).sql.gz"
+  $SUDO docker compose exec -T postgres pg_dump -U ozon -d ozon | gzip > "$file"
+  chmod 600 "$file"
+  say "резервная копия: $file"
+}
+
+cmd_users() { $SUDO docker compose exec ozon-seller-mcp /ozon-seller-mcp --users; }
 cmd_restart() { $SUDO docker compose restart; }
 cmd_down()    { $SUDO docker compose down; }
 
@@ -371,7 +432,9 @@ ${APP} — развёртывание на VPS
   ./deploy.sh update      обновить до свежего коммита (с откатом при неудаче)
   ./deploy.sh status      что запущено и отвечает ли сервер
   ./deploy.sh logs        журнал сервера
-  ./deploy.sh secrets     показать пароль владельца и токены
+  ./deploy.sh secrets     показать адрес и мастер-ключ
+  ./deploy.sh backup      резервная копия базы
+  ./deploy.sh users       пользователи сервиса
   ./deploy.sh restart     перезапустить
   ./deploy.sh down        остановить
 
@@ -386,6 +449,8 @@ case "${1:-}" in
   status)  cmd_status ;;
   logs)    cmd_logs ;;
   secrets) cmd_secrets ;;
+  backup)  cmd_backup ;;
+  users)   cmd_users ;;
   restart) cmd_restart ;;
   down)    cmd_down ;;
   *)

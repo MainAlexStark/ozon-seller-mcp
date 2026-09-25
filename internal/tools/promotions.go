@@ -154,7 +154,7 @@ func (r *Registry) RegisterPromotions() {
 				return "", err
 			}
 
-			resp, err := r.client.Call(ctx, ozon.PathActionActivate, obj{
+			resp, err := r.clientFor(ctx).Call(ctx, ozon.PathActionActivate, obj{
 				"action_id": a.ActionID,
 				"products":  a.Products,
 			})
@@ -193,7 +193,7 @@ func (r *Registry) actionPrices(ctx context.Context, actionID int64, products []
 		want[p.ProductID] = true
 	}
 
-	known, err := r.client.ActionProductsFor(ctx, ozon.PathActionCandidates, actionID, want, maxActionPages)
+	known, err := r.clientFor(ctx).ActionProductsFor(ctx, ozon.PathActionCandidates, actionID, want, maxActionPages)
 	if err != nil {
 		return known, fmt.Sprintf(
 			"ПРЕДУПРЕЖДЕНИЕ: не удалось прочитать кандидатов акции (%v), "+
@@ -207,7 +207,7 @@ func (r *Registry) actionPrices(ctx context.Context, actionID int64, products []
 		for id := range known {
 			delete(want, id)
 		}
-		participating, err := r.client.ActionProductsFor(ctx, ozon.PathActionProducts, actionID, want, maxActionPages)
+		participating, err := r.clientFor(ctx).ActionProductsFor(ctx, ozon.PathActionProducts, actionID, want, maxActionPages)
 		if err == nil {
 			for id, product := range participating {
 				known[id] = product

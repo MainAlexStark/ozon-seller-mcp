@@ -2,108 +2,129 @@ package main
 
 import (
 	"bufio"
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
 	"text/tabwriter"
 	"time"
 
-	"github.com/MainAlexStark/ozon-seller-mcp/internal/oauth"
+	"github.com/MainAlexStark/ozon-seller-mcp/internal/pgstore"
+	"github.com/MainAlexStark/ozon-seller-mcp/internal/secure"
 )
 
-// hashPassword считает хеш пароля владельца.
+// Команды администратора сервиса. Работают с той же базой, что и
+// сервер (OZON_DATABASE_URL), и запускаются рядом с ним:
 //
-// Пароль читается со stdin, а не из аргумента командной строки:
-// аргументы видны любому пользователю через ps и оседают в истории
-// оболочки.
-func hashPassword() {
-	fmt.Fprint(os.Stderr, "Пароль владельца (минимум 12 символов): ")
+//	docker compose exec ozon-seller-mcp /ozon-seller-mcp --users
 
+func printSecretKey() {
+	key, err := secure.GenerateSecretKey()
+	if err != nil {
+		fatal(err.Error())
+	}
+	fmt.Println(key)
+	fmt.Fprintln(os.Stderr,
+		"\nПоложите строку в OZON_SECRET_KEY. Ею шифруются API-ключи магазинов:\n"+
+			"потеряете — все магазины придётся подключать заново. Сохраните копию\n"+
+			"отдельно от резервных копий базы.")
+}
+
+func adminDB() (*pgstore.DB, context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	url := os.Getenv("OZON_DATABASE_URL")
+	if url == "" {
+		cancel()
+		fatal("нужен OZON_DATABASE_URL")
+	}
+	db, err := pgstore.Open(ctx, url)
+	if err != nil {
+		cancel()
+		fatal(err.Error())
+	}
+	return db, ctx, cancel
+}
+
+func runMigrate() {
+	db, ctx, cancel := adminDB()
+	defer cancel()
+	defer db.Close()
+	if err := db.Migrate(ctx); err != nil {
+		fatal(err.Error())
+	}
+	fmt.Println("Миграции применены.")
+}
+
+func listUsers() {
+	db, ctx, cancel := adminDB()
+	defer cancel()
+	defer db.Close()
+
+	list, err := db.ListUsers(ctx)
+	if err != nil {
+		fatal(err.Error())
+	}
+	if len(list) == 0 {
+		fmt.Println("Пользователей нет.")
+		return
+	}
+	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "ID\tПОЧТА\tТАРИФ\tМАГАЗИНОВ\tВЫЗОВОВ 30Д\tЗАРЕГИСТРИРОВАН\tСТАТУС")
+	for _, u := range list {
+		status := "активен"
+		if u.Disabled {
+			status = "заблокирован"
+		}
+		fmt.Fprintf(tw, "%d\t%s\t%s\t%d\t%d\t%s\t%s\n",
+			u.ID, u.Email, u.Plan, u.Shops, u.Calls30d, u.CreatedAt.Format("02.01.2006"), status)
+	}
+	_ = tw.Flush()
+}
+
+func setDisabled(email string, disabled bool) {
+	db, ctx, cancel := adminDB()
+	defer cancel()
+	defer db.Close()
+
+	if err := db.SetDisabled(ctx, email, disabled); err != nil {
+		if errors.Is(err, pgstore.ErrNotFound) {
+			fatal("пользователь не найден: " + email)
+		}
+		fatal(err.Error())
+	}
+	if disabled {
+		fmt.Println("Заблокирован. Кабинет, подключения Claude и токены перестали работать немедленно.")
+	} else {
+		fmt.Println("Разблокирован. Входить в кабинет можно; подключения, выданные до блокировки, снова работают.")
+	}
+}
+
+// resetPassword задаёт пароль пользователю, который его забыл.
+//
+// Пароль читается со stdin, а не из аргумента: аргументы видны любому
+// пользователю машины через ps и оседают в истории оболочки.
+func resetPassword(email string) {
+	fmt.Fprint(os.Stderr, "Новый пароль (от 10 символов): ")
 	sc := bufio.NewScanner(os.Stdin)
 	if !sc.Scan() {
 		fatal("пароль не прочитан")
 	}
-	password := strings.TrimSpace(sc.Text())
-
-	hash, err := oauth.HashPassword(password)
+	hash, err := secure.HashPassword(strings.TrimSpace(sc.Text()))
 	if err != nil {
 		fatal(err.Error())
 	}
 
-	fmt.Println(hash)
-	fmt.Fprintln(os.Stderr,
-		"\nПоложите строку в OZON_OWNER_PASSWORD_HASH.\n"+
-			"Сам пароль нигде не хранится — вы будете вводить его на экране согласия\n"+
-			"при подключении каждого нового устройства.")
-}
+	db, ctx, cancel := adminDB()
+	defer cancel()
+	defer db.Close()
 
-// listGrants показывает действующие выдачи.
-//
-// Это ответ на вопрос «какие устройства сейчас имеют доступ» — тот
-// самый, на который прежняя схема со статическим секретом ответить
-// не могла в принципе.
-func listGrants() {
-	store, err := oauth.NewStore(env("OZON_OAUTH_STORE", "/var/lib/ozon-seller-mcp/oauth.json"))
+	user, err := db.UserByEmail(ctx, email)
 	if err != nil {
-		fatal("хранилище OAuth: " + err.Error())
+		fatal("пользователь не найден: " + email)
 	}
-
-	grants := store.Grants()
-	if len(grants) == 0 {
-		fmt.Println("Действующих подключений нет.")
-		return
-	}
-
-	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "ВЫДАЧА\tПРИЛОЖЕНИЕ\tПРАВА\tДЕЙСТВУЕТ ДО")
-	for _, g := range grants {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n",
-			shortID(g.GrantID),
-			g.ClientName,
-			strings.Join(g.Scopes, " "),
-			g.ExpiresAt.Format(time.DateTime))
-	}
-	_ = tw.Flush()
-
-	fmt.Println("\nОтозвать: ozon-seller-mcp --revoke <ВЫДАЧА>")
-}
-
-// revokeGrant отзывает выдачу по её началу.
-func revokeGrant(prefix string) {
-	store, err := oauth.NewStore(env("OZON_OAUTH_STORE", "/var/lib/ozon-seller-mcp/oauth.json"))
-	if err != nil {
-		fatal("хранилище OAuth: " + err.Error())
-	}
-
-	var matches []oauth.Grant
-	for _, g := range store.Grants() {
-		if strings.HasPrefix(g.GrantID, prefix) {
-			matches = append(matches, g)
-		}
-	}
-
-	switch len(matches) {
-	case 0:
-		fatal("выдача не найдена: " + prefix)
-	case 1:
-		// продолжаем
-	default:
-		// Отзывать наугад нельзя: можно отключить не то устройство.
-		fatal(fmt.Sprintf("под %q подходит %d выдач — уточните", prefix, len(matches)))
-	}
-
-	n, err := store.RevokeGrant(matches[0].GrantID)
-	if err != nil {
+	if err := db.SetPassword(ctx, user.ID, hash, ""); err != nil {
 		fatal(err.Error())
 	}
-	fmt.Printf("Отозвано: %s (%s), удалено токенов: %d\n",
-		matches[0].ClientName, shortID(matches[0].GrantID), n)
-	fmt.Println("Устройство потеряет доступ немедленно.")
-}
-
-func shortID(id string) string {
-	if len(id) > 12 {
-		return id[:12]
-	}
-	return id
+	fmt.Println("Пароль изменён, все сессии кабинета закрыты.")
 }

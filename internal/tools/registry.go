@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/MainAlexStark/ozon-seller-mcp/internal/mcp"
@@ -67,7 +68,7 @@ type Spec struct {
 
 // Add регистрирует инструмент, описанный спецификацией.
 func (r *Registry) Add(s Spec) {
-	r.server.Register(mcp.Tool{
+	r.register(mcp.Tool{
 		Name:        s.Name,
 		Description: s.Desc,
 		InputSchema: s.Schema,
@@ -105,9 +106,9 @@ func (r *Registry) Add(s Spec) {
 				err  error
 			)
 			if s.Get {
-				resp, err = r.client.Get(ctx, s.Path)
+				resp, err = r.clientFor(ctx).Get(ctx, s.Path)
 			} else {
-				resp, err = r.client.Call(ctx, s.Path, payload)
+				resp, err = r.clientFor(ctx).Call(ctx, s.Path, payload)
 			}
 			if err != nil {
 				if s.Hint != nil {
@@ -127,6 +128,30 @@ func (r *Registry) Add(s Spec) {
 // для тех случаев, где одной обёртки над путём мало (цены со
 // страховкой, ожидание импорта, самодиагностика).
 func (r *Registry) AddCustom(t mcp.Tool) {
+	r.register(t)
+}
+
+// ErrNoShop — вызов пришёл без магазина. В нормальной работе этого
+// не бывает: транспорт не пропускает запрос, для которого не нашёлся
+// магазин. Ошибка вместо паники — на случай, если это «не бывает»
+// однажды сломается.
+var ErrNoShop = errors.New("к подключению не привязан магазин Ozon: переподключите сервер в Claude")
+
+// register — общая обёртка всех инструментов: проверка, что магазин
+// известен, и сообщение наблюдателю о вызове.
+func (r *Registry) register(t mcp.Tool) {
+	inner := t.Handler
+	name := t.Name
+	t.Handler = func(ctx context.Context, raw json.RawMessage) (string, error) {
+		if r.clientFor(ctx) == nil {
+			return "", ErrNoShop
+		}
+		out, err := inner(ctx, raw)
+		if h, ok := ctx.Value(hookKey{}).(CallHook); ok && h != nil {
+			h(name, err != nil)
+		}
+		return out, err
+	}
 	r.server.Register(t)
 }
 

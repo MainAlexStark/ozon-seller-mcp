@@ -1,15 +1,15 @@
-# systemd-юнит для сетевого режима.
+# systemd-юнит для сервиса (без Docker). PostgreSQL ставится отдельно.
 #
 #   sudo cp deploy/ozon-seller-mcp.service /etc/systemd/system/
 #   sudo cp deploy/ozon-seller-mcp.env /etc/ozon-seller-mcp.env
-#   sudo chmod 600 /etc/ozon-seller-mcp.env      # там ключ Ozon и токены
+#   sudo chmod 600 /etc/ozon-seller-mcp.env      # там мастер-ключ и пароль базы
 #   sudo useradd --system --no-create-home --shell /usr/sbin/nologin ozonmcp
-#   ozon-seller-mcp --hash-password    # и положить в env-файл
+#   ozon-seller-mcp --gen-secret       # и положить в OZON_SECRET_KEY
 #   sudo systemctl enable --now ozon-seller-mcp
 
 [Unit]
 Description=MCP-сервер Ozon Seller API
-After=network-online.target
+After=network-online.target postgresql.service
 Wants=network-online.target
 
 [Service]
@@ -23,10 +23,7 @@ EnvironmentFile=/etc/ozon-seller-mcp.env
 
 ExecStart=/usr/local/bin/ozon-seller-mcp --http 127.0.0.1:8571
 
-# Хранилище OAuth: клиенты и токены должны переживать перезапуск,
-# иначе каждый рестарт отключает все устройства.
-StateDirectory=ozon-seller-mcp
-StateDirectoryMode=0700
+# Состояния на диске нет: всё в PostgreSQL.
 
 Restart=always
 RestartSec=5s
@@ -34,7 +31,8 @@ RestartSec=5s
 # Слушаем только петлю: наружу выпускает обратный прокси, который
 # занимается TLS. Порт 8571 не должен быть виден из интернета напрямую.
 
-# Ограничения прав: сервису нужен только исходящий HTTPS к Ozon.
+# Ограничения прав: сервису нужны только исходящий HTTPS к Ozon и база.
+# AF_UNIX — на случай базы на той же машине через сокет.
 NoNewPrivileges=true
 PrivateTmp=true
 PrivateDevices=true
@@ -51,7 +49,7 @@ MemoryDenyWriteExecute=true
 SystemCallFilter=@system-service
 SystemCallErrorNumber=EPERM
 CapabilityBoundingSet=
-RestrictAddressFamilies=AF_INET AF_INET6
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 
 [Install]
 WantedBy=multi-user.target

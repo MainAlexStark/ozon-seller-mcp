@@ -146,7 +146,7 @@ func (r *Registry) RegisterPricing() {
 				return "", err
 			}
 
-			resp, err := r.client.UpdatePrices(ctx, a.Prices)
+			resp, err := r.clientFor(ctx).UpdatePrices(ctx, a.Prices)
 			if err != nil {
 				return "", decorate(err)
 			}
@@ -189,7 +189,7 @@ func (r *Registry) RegisterPricing() {
 				return "", err
 			}
 
-			resp, err := r.client.UpdateStocks(ctx, a.Stocks)
+			resp, err := r.clientFor(ctx).UpdateStocks(ctx, a.Stocks)
 			if err != nil {
 				return "", decorate(err)
 			}
@@ -214,7 +214,7 @@ func (r *Registry) priceChanges(ctx context.Context, updates []ozon.PriceUpdate)
 		return nil, "ПРЕДУПРЕЖДЕНИЕ: цены заданы по product_id, поэтому сверка с текущими ценами не выполнялась.", nil
 	}
 
-	current, err := r.client.GetPrices(ctx, offerIDs)
+	current, err := r.clientFor(ctx).GetPrices(ctx, offerIDs)
 	if err != nil {
 		return nil, fmt.Sprintf(
 			"ПРЕДУПРЕЖДЕНИЕ: не удалось прочитать текущие цены (%v), страховка от опечатки не сработала. "+
