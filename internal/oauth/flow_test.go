@@ -337,6 +337,13 @@ func TestFullAuthorizationCodeFlow(t *testing.T) {
 	if validated.UserID != 1 || validated.ShopID != 10 {
 		t.Errorf("токен привязан не к тому: %+v", validated.Subject)
 	}
+
+	// Клиент показывает человеку, к какому магазину он подключён.
+	shop, _ := tok["shop"].(map[string]any)
+	want := h.accounts.shops[1][0]
+	if shop == nil || shop["name"] != want.Name || shop["ozon_client_id"] != want.ClientID {
+		t.Errorf("в ответе нет магазина выдачи %+v: %v", want, tok["shop"])
+	}
 }
 
 func TestUserCanNarrowScopesAtConsent(t *testing.T) {

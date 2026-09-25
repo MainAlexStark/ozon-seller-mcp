@@ -180,7 +180,34 @@ func (s *Server) issue(w http.ResponseWriter, r *http.Request, clientID string, 
 		return
 	}
 
+	// Магазин, к которому привязан токен, — чтобы клиент мог показать
+	// человеку, куда он подключён. RFC 6749 §5.1 разрешает дополнительные
+	// поля в ответе; клиенты, которые о нём не знают, его пропустят.
+	if shop, ok := s.shopOf(r.Context(), subj); ok {
+		resp["shop"] = map[string]any{
+			"id":             shop.ID,
+			"name":           shop.Name,
+			"ozon_client_id": shop.ClientID,
+		}
+	}
+
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// shopOf находит магазин выдачи среди магазинов пользователя. Сведения
+// справочные: не нашли — токен всё равно выдаётся, просто без имени.
+func (s *Server) shopOf(ctx context.Context, subj Subject) (Shop, bool) {
+	shops, err := s.accounts.Shops(ctx, subj.UserID)
+	if err != nil {
+		s.logger.Warn("магазин для ответа с токеном", "user", subj.UserID, "err", err)
+		return Shop{}, false
+	}
+	for _, sh := range shops {
+		if sh.ID == subj.ShopID {
+			return sh, true
+		}
+	}
+	return Shop{}, false
 }
 
 // handleRevoke — RFC 7009.
