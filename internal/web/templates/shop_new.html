@@ -2,7 +2,7 @@
 {{define "body"}}
 <div class="top"><a href="/account">← Кабинет</a></div>
 <h1>{{if .First}}Подключите магазин Ozon{{else}}Ещё один магазин{{end}}</h1>
-<p class="sub">Ключ выпускается в кабинете продавца: <b>Настройки → API-ключи</b>.
+<p class="sub">Ключ выпускается в кабинете продавца: <a href="https://seller.ozon.ru/app/settings/api-keys" target="_blank" rel="noopener noreferrer"><b>Настройки → API-ключи</b> ↗</a>.
 Мы проверим его на Ozon до сохранения и будем хранить зашифрованным.</p>
 {{if .Error}}<div class="err">{{.Error}}</div>{{end}}
 <form method="post" action="/account/shops/new">
@@ -10,6 +10,8 @@
 <input type="hidden" name="next" value="{{.Next}}">
 <label class="field"><span>Название (для себя)</span>
   <input type="text" name="name" value="{{.Name}}" maxlength="80" placeholder="Мой магазин"></label>
+<p class="hint">Client-Id и API-ключ — на странице <a href="https://seller.ozon.ru/app/settings/api-keys" target="_blank" rel="noopener noreferrer">seller.ozon.ru → API-ключи</a>:
+нажмите «Сгенерировать ключ», скопируйте ключ (Ozon покажет его один раз) и Client-Id рядом с ним.</p>
 <label class="field"><span>Client-Id</span>
   <input type="text" name="client_id" value="{{.ClientID}}" inputmode="numeric" autocomplete="off" required></label>
 <label class="field"><span>API-ключ</span>

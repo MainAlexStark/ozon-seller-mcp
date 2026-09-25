@@ -37,6 +37,7 @@
     <form method="post" action="/account/shops/{{.ID}}/check"><input type="hidden" name="csrf" value="{{$csrf}}">
       <button class="small deny" type="submit">Проверить</button></form>
     <details><summary>Обновить ключ</summary>
+      <p class="hint">Новый ключ — в <a href="https://seller.ozon.ru/app/settings/api-keys" target="_blank" rel="noopener noreferrer">кабинете Ozon → API-ключи</a>.</p>
       <form method="post" action="/account/shops/{{.ID}}/key" class="inline">
         <input type="hidden" name="csrf" value="{{$csrf}}">
         <input type="password" name="api_key" autocomplete="off" placeholder="новый API-ключ" required>
