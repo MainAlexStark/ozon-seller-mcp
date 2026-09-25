@@ -1,7 +1,12 @@
-.PHONY: build test test-db check install run fmt deploy update
+.PHONY: build tidy test test-db check install run fmt deploy update
 
 build:
 	go build -o bin/ozon-seller-mcp ./cmd/ozon-seller-mcp
+
+# go.mod/go.sum в порядок. Без Go на машине — через Docker.
+tidy:
+	@if command -v go >/dev/null 2>&1; then go mod tidy; \
+	else docker run --rm -v "$$PWD":/src -w /src golang:1.25-alpine go mod tidy; fi
 
 install:
 	go install ./cmd/ozon-seller-mcp

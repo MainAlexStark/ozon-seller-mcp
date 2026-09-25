@@ -32,7 +32,17 @@ PG_ENV_FILE="deploy/postgres.env"
 # обновлении — так обновление со старой однопользовательской версии
 # само получает базу.
 prepare_extra() {
-  [ -f "$PG_ENV_FILE" ] || cp "deploy/postgres.env.example" "$PG_ENV_FILE"
+  if [ ! -f "$PG_ENV_FILE" ]; then
+    # Пароль базы задаётся только при первом создании тома. Если том
+    # уже есть, а файла с паролем нет, новый пароль не подойдёт, и
+    # сервер не подключится к собственной базе — лучше остановиться.
+    if $SUDO docker volume inspect "${APP}_pgdata" >/dev/null 2>&1; then
+      die "база уже создана (том ${APP}_pgdata), а ${PG_ENV_FILE} с её паролем пропал.
+Восстановите файл из копии или, если данных не жалко:
+  sudo docker compose down && sudo docker volume rm ${APP}_pgdata"
+    fi
+    cp "deploy/postgres.env.example" "$PG_ENV_FILE"
+  fi
   chmod 600 "$PG_ENV_FILE"
 
   local pg_password
@@ -341,6 +351,14 @@ cmd_install() {
   print_secrets
 }
 
+# cmd_update обновляет сервер в два захода.
+#
+# Первый заход — только git pull, после чего скрипт перезапускает сам
+# себя (exec) уже из обновлённого файла. Без этого обновление выполняет
+# СТАРАЯ версия deploy.sh: она не знает, какие файлы и секреты нужны
+# новой версии (так и вышло при переходе на сервис с базой — старый
+# скрипт не создал deploy/postgres.env, и compose упал). Заодно bash
+# не читает дальше файл, который git только что переписал под ним.
 cmd_update() {
   require_tools
   [ -f "$ENV_FILE" ] || die "сервер здесь не развёрнут: сначала ./deploy.sh <домен>"
@@ -349,10 +367,13 @@ cmd_update() {
   [ -n "$DOMAIN" ] || die "в $ENV_FILE не задан ${PREFIX}_PUBLIC_URL"
 
   local before
-  before="$(git rev-parse HEAD)"
-
-  step "обновление исходников"
-  git pull --ff-only
+  if [ "${1:-}" != "--continue" ]; then
+    before="$(git rev-parse HEAD)"
+    step "обновление исходников"
+    git pull --ff-only
+    exec "$BASH" "$PWD/deploy.sh" update --continue "$before"
+  fi
+  before="${2:?}"
 
   if [ "$(git rev-parse HEAD)" = "$before" ]; then
     say "уже последняя версия — пересобираю на всякий случай"
@@ -360,14 +381,20 @@ cmd_update() {
 
   # Новая версия может требовать новых секретов (так было при переходе
   # на сервис с базой) — дописываем недостающие, существующие не трогаем.
+  step "секреты"
   prepare_extra
 
   # Перед обновлением — копия базы: миграции применяются на старте,
   # и откатить код без отката данных можно не всегда.
-  cmd_backup || say "резервная копия не снялась — продолжаю (база могла ещё не существовать)"
+  cmd_backup || say "база не запущена — копию пропускаю (при первом переходе на сервис это нормально)"
 
   step "пересборка"
-  compose_up
+  if ! compose_up; then
+    # Сборка упала до замены контейнеров: прежний сервер продолжает
+    # работать. Возвращаем и код, чтобы на диске было то, что запущено.
+    git reset --hard "$before" >/dev/null
+    die "сборка новой версии не удалась — сервер не тронут, код возвращён на ${before:0:12}. Причина выше."
+  fi
 
   step "проверка"
   if wait_health; then
@@ -381,10 +408,12 @@ cmd_update() {
   # и узнаёте вы об этом от того, кто им пользуется.
   say ""
   say "Новая версия не отвечает — откатываюсь на ${before:0:12}"
+  say "журнал упавшей версии:"
+  $SUDO docker compose logs --tail 30 "$APP" 2>/dev/null || true
   git reset --hard "$before" >/dev/null
-  compose_up
+  compose_up || die "не собирается и прежняя версия. Смотрите ./deploy.sh logs"
   if wait_health; then
-    die "обновление не удалось, вернулся прежний сервер. Смотрите ./deploy.sh logs"
+    die "обновление не удалось, вернулся прежний сервер. Смотрите журнал выше"
   fi
   die "не отвечает и прежняя версия — дело не в коде. Смотрите ./deploy.sh logs"
 }
@@ -443,21 +472,28 @@ ${USAGE_EXTRA}
 USAGE
 }
 
-case "${1:-}" in
-  ""|-h|--help|help) usage ;;
-  update)  cmd_update ;;
-  status)  cmd_status ;;
-  logs)    cmd_logs ;;
-  secrets) cmd_secrets ;;
-  backup)  cmd_backup ;;
-  users)   cmd_users ;;
-  restart) cmd_restart ;;
-  down)    cmd_down ;;
-  *)
-    case "$1" in
-      *.*) DOMAIN="$1" ;;
-      *)   die "«$1» не похоже на домен и не является командой. ./deploy.sh --help" ;;
-    esac
-    cmd_install
-    ;;
-esac
+# main — вся работа внутри функции, а вызов с exit стоит одной строкой
+# в конце. Bash читает скрипт по мере выполнения; если файл поменяется
+# под работающим скриптом (git pull, правка), он не дочитает чужой хвост.
+main() {
+  case "${1:-}" in
+    ""|-h|--help|help) usage ;;
+    update)  shift; cmd_update "$@" ;;
+    status)  cmd_status ;;
+    logs)    cmd_logs ;;
+    secrets) cmd_secrets ;;
+    backup)  cmd_backup ;;
+    users)   cmd_users ;;
+    restart) cmd_restart ;;
+    down)    cmd_down ;;
+    *)
+      case "$1" in
+        *.*) DOMAIN="$1" ;;
+        *)   die "«$1» не похоже на домен и не является командой. ./deploy.sh --help" ;;
+      esac
+      cmd_install
+      ;;
+  esac
+}
+
+main "$@"; exit $?
