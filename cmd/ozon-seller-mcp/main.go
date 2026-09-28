@@ -15,6 +15,7 @@
 //	OZON_CLIENT_ID           обязательно
 //	OZON_API_KEY             обязательно
 //	OZON_ALLOW_WRITES        true разрешает изменение данных
+//	OZON_FILES_DIR           куда сохранять этикетки и акты (по умолчанию «Загрузки/Ozon»)
 //
 // Переменные окружения, сервис:
 //
@@ -25,6 +26,7 @@
 //	OZON_RESOURCE_URL        адрес MCP, если отличается от <public>/mcp
 //	OZON_SIGNUP              open (по умолчанию) или closed
 //	OZON_ALLOWED_ORIGINS     разрешённые Origin для /mcp через запятую
+//	OZON_FILES_TTL           сколько живёт ссылка на этикетки и акты (1h)
 //
 // Общие:
 //
@@ -45,6 +47,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/MainAlexStark/ozon-seller-mcp/internal/files"
 	"github.com/MainAlexStark/ozon-seller-mcp/internal/mcp"
 	"github.com/MainAlexStark/ozon-seller-mcp/internal/tools"
 	"github.com/MainAlexStark/ozon-seller-mcp/ozon"
@@ -116,7 +119,7 @@ func main() {
 		safety.Mode = tools.ModeWrite
 	}
 
-	srv := newMCP(client, safety)
+	srv := newMCP(client, safety, stdioFiles())
 
 	if *check {
 		runCheck(client, srv, safety)
@@ -156,15 +159,31 @@ func envClient() *ozon.Client {
 	return client
 }
 
+// stdioFiles — папка для этикеток и актов в локальном режиме.
+func stdioFiles() files.Store {
+	dir := os.Getenv("OZON_FILES_DIR")
+	if dir == "" {
+		dir = files.DefaultDir()
+	}
+	store, err := files.NewDir(dir)
+	if err != nil {
+		fatal(err.Error())
+	}
+	return store
+}
+
 // newMCP собирает сервер со всеми инструментами. client == nil — сервис:
-// клиент каждого запроса приходит из контекста.
-func newMCP(client *ozon.Client, safety tools.Safety) *mcp.Server {
+// клиент каждого запроса приходит из контекста. store — куда сохранять
+// документы, которые Ozon отдаёт файлом.
+func newMCP(client *ozon.Client, safety tools.Safety, store files.Store) *mcp.Server {
 	srv := mcp.NewServer("ozon-seller-mcp", version)
 	reg := tools.NewRegistry(client, safety, srv)
+	reg.SetFiles(store)
 	reg.RegisterCatalog()
 	reg.RegisterPricing()
 	reg.RegisterAnalytics()
 	reg.RegisterFinance()
+	reg.RegisterFBS()
 	reg.RegisterFBO()
 	reg.RegisterReturns()
 	reg.RegisterQuestions()
@@ -268,6 +287,15 @@ func envFloat(key string, def float64) float64 {
 	if v := os.Getenv(key); v != "" {
 		if f, err := strconv.ParseFloat(v, 64); err == nil {
 			return f
+		}
+	}
+	return def
+}
+
+func envDuration(key string, def time.Duration) time.Duration {
+	if v := os.Getenv(key); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			return d
 		}
 	}
 	return def

@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/MainAlexStark/ozon-seller-mcp/internal/files"
 	"github.com/MainAlexStark/ozon-seller-mcp/internal/mcp"
 	"github.com/MainAlexStark/ozon-seller-mcp/ozon"
 )
@@ -51,6 +52,13 @@ func probes() []probe {
 			},
 			"limit": 1,
 		}),
+
+		// FBS: сборка и отгрузки. Тела собираются тем же кодом, что и
+		// у инструментов: у необработанных обязательна пара дат, у
+		// отгрузок — период, и проверять стоит ровно то, что уходит в бою.
+		post("ozon_fbs_unfulfilled_list", ozon.PathPostingFBSUnfulfilled, withUnfulfilledWindow(obj{"limit": 1}, 14)),
+		post("ozon_fbs_acts_list", ozon.PathFBSActList, withActPeriod(obj{"limit": 1}, 14)),
+		post("ozon_fbs_cancel_reasons", ozon.PathPostingFBSCancelReasons, obj{}),
 
 		// FBO. Эти методы переезжали недавно и порознь — список
 		// отправлений уехал на v3, получение одного осталось на v2,
@@ -124,6 +132,7 @@ func (r *Registry) RegisterDiagnostics() {
 			fmt.Fprintf(&b, "Порог смены цены:        %.0f%%\n", safety.MaxPriceDeltaPct)
 			fmt.Fprintf(&b, "Позиций за одну запись:  %d\n", safety.MaxItemsPerWrite)
 			fmt.Fprintf(&b, "Потолок ответа:          %d байт\n", safety.MaxResponseBytes)
+			fmt.Fprintf(&b, "Этикетки и акты:         %s\n", describeFiles(r.files))
 			fmt.Fprintf(&b, "\nИнструментов зарегистрировано: %d\n", len(r.server.ToolNames()))
 			b.WriteString("\nПроверить, что ключи приняты и методы живы: ozon_api_selftest.")
 
@@ -185,6 +194,19 @@ func (r *Registry) RegisterDiagnostics() {
 			return b.String(), nil
 		},
 	})
+}
+
+// describeFiles объясняет, куда уходят сохранённые документы.
+func describeFiles(s files.Store) string {
+	switch st := s.(type) {
+	case *files.Dir:
+		return "папка " + st.Root
+	case *files.Memory:
+		return fmt.Sprintf("ссылки на этот сервер, живут %s", st.TTL)
+	case nil:
+		return "сохранять некуда — инструменты этикеток и актов работать не будут"
+	}
+	return "своё хранилище"
 }
 
 // countNetworkFailures считает сбои соединения.

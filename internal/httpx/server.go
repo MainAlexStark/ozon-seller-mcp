@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/MainAlexStark/ozon-seller-mcp/internal/files"
 	"github.com/MainAlexStark/ozon-seller-mcp/internal/mcp"
 	"github.com/MainAlexStark/ozon-seller-mcp/internal/oauth"
 	"github.com/MainAlexStark/ozon-seller-mcp/internal/tools"
@@ -32,6 +33,12 @@ type Config struct {
 	// Web — страницы сервиса (регистрация, кабинет). Обслуживает всё,
 	// что не /mcp, не OAuth и не /healthz.
 	Web http.Handler
+
+	// Files — раздача сохранённых этикеток и актов по ссылкам /files/….
+	// Без авторизации намеренно: ссылку открывает браузер человека,
+	// у которого нет токена Claude, а доступ держится на неугадываемом
+	// токене в самом пути и коротком сроке жизни.
+	Files http.Handler
 
 	// Ready — проверка готовности для /healthz (например, пинг базы).
 	Ready func(ctx context.Context) error
@@ -118,6 +125,10 @@ func (s *Server) Handler() http.Handler {
 	// ещё нет.
 	if s.auth.OAuth != nil {
 		s.auth.OAuth.Mount(mux)
+	}
+
+	if s.cfg.Files != nil {
+		mux.Handle(files.Prefix, s.cfg.Files)
 	}
 
 	mux.HandleFunc("/mcp", s.mcpEndpoint)

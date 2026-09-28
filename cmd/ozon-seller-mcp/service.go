@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/MainAlexStark/ozon-seller-mcp/internal/files"
 	"github.com/MainAlexStark/ozon-seller-mcp/internal/httpx"
 	"github.com/MainAlexStark/ozon-seller-mcp/internal/oauth"
 	"github.com/MainAlexStark/ozon-seller-mcp/internal/pgstore"
@@ -100,7 +101,12 @@ func runService(ctx context.Context, safety tools.Safety, addr string) {
 		}
 	}
 
-	srv := newMCP(nil, safety)
+	// Этикетки и акты в сервисе живут в памяти и отдаются по ссылке:
+	// диска пользователя у сервера нет, а хранить чужие документы
+	// дольше, чем нужно, чтобы их распечатать, незачем.
+	fileStore := files.NewMemory(publicURL, envDuration("OZON_FILES_TTL", time.Hour), 256<<20)
+
+	srv := newMCP(nil, safety, fileStore)
 	http, err := httpx.NewServer(srv,
 		httpx.Auth{OAuth: oauthSrv, APITokens: apiTokens},
 		shopSvc,
@@ -110,6 +116,7 @@ func runService(ctx context.Context, safety tools.Safety, addr string) {
 			AllowedOrigins: origins,
 			Safety:         safety,
 			Web:            site,
+			Files:          fileStore,
 			Ready:          db.Ping,
 			Logger:         logger,
 		})

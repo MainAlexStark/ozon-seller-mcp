@@ -89,6 +89,52 @@ const (
 	PathPostingFBSList = "/v3/posting/fbs/list"
 	PathPostingFBSGet  = "/v3/posting/fbs/get"
 
+	// --- FBS: сборка и работа с отправлением ---
+	PathPostingFBSUnfulfilled  = "/v3/posting/fbs/unfulfilled/list"
+	PathPostingFBSByBarcode    = "/v2/posting/fbs/get-by-barcode"
+	PathPostingFBSRestrictions = "/v1/posting/fbs/restrictions"
+	PathPostingFBSShip         = "/v4/posting/fbs/ship"
+
+	// Причины отмены живут в двух методах: общий справочник и причины,
+	// допустимые для конкретных отправлений. Второй точнее — часть
+	// причин доступна не на любом статусе.
+	PathPostingFBSCancelReasons    = "/v2/posting/fbs/cancel-reason/list"
+	PathPostingFBSCancelReasonsFor = "/v1/posting/fbs/cancel-reason"
+	PathPostingFBSCancel           = "/v2/posting/fbs/cancel"
+
+	// --- FBS: этикетки ---
+	//
+	// Синхронный метод отдаёт PDF сразу, но не больше чем на 20
+	// отправлений. Для большего числа — задание: create возвращает
+	// идентификатор, get — ссылку на готовый файл на стороне Ozon.
+	PathPostingFBSLabel       = "/v2/posting/fbs/package-label"
+	PathPostingFBSLabelCreate = "/v2/posting/fbs/package-label/create"
+	PathPostingFBSLabelGet    = "/v1/posting/fbs/package-label/get"
+
+	// --- FBS: отгрузка (акт, накладная, пропуск) ---
+	//
+	// Обратите внимание на порядок сегментов: статусы доставки живут
+	// в /v2/fbs/posting/…, а всё остальное — в /v2/posting/fbs/….
+	// Разница историческая, но 404 из-за неё настоящий.
+	PathFBSActCreate          = "/v2/posting/fbs/act/create"
+	PathFBSActList            = "/v2/posting/fbs/act/list"
+	PathFBSActStatus          = "/v2/posting/fbs/act/check-status"
+	PathFBSActPostings        = "/v2/posting/fbs/act/get-postings"
+	PathFBSActPDF             = "/v2/posting/fbs/act/get-pdf"
+	PathFBSActContainerLabels = "/v2/posting/fbs/act/get-container-labels"
+	PathFBSActBarcode         = "/v2/posting/fbs/act/get-barcode"
+	PathFBSActBarcodeText     = "/v2/posting/fbs/act/get-barcode/text"
+	PathFBSDigitalActPDF      = "/v2/posting/fbs/digital/act/get-pdf"
+	PathCarriageAvailable     = "/v1/posting/carriage-available/list"
+	PathCarriageGet           = "/v1/carriage/get"
+
+	// --- FBS: доставка своими силами ---
+	PathFBSTrackingSet     = "/v2/fbs/posting/tracking-number/set"
+	PathFBSSetDelivering   = "/v2/fbs/posting/delivering"
+	PathFBSSetLastMile     = "/v2/fbs/posting/last-mile"
+	PathFBSSetDelivered    = "/v2/fbs/posting/delivered"
+	PathFBSSetSentBySeller = "/v2/fbs/posting/sent-by-seller"
+
 	// --- FBO: заказы со складов Ozon ---
 	//
 	// Список переехал на v3 (курсор вместо offset), а получение одного

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/MainAlexStark/ozon-seller-mcp/internal/files"
 	"github.com/MainAlexStark/ozon-seller-mcp/internal/mcp"
 	"github.com/MainAlexStark/ozon-seller-mcp/ozon"
 )
@@ -17,7 +18,17 @@ type Registry struct {
 	client *ozon.Client
 	safety Safety
 	server *mcp.Server
+
+	// files — куда класть документы, которые Ozon отдаёт файлом
+	// (этикетки, акты). nil — сохранять некуда, и такие инструменты
+	// честно об этом говорят, а не молча теряют файл.
+	files files.Store
 }
+
+// SetFiles задаёт хранилище файлов. Вызывается до регистрации: сам
+// набор инструментов от этого не зависит, но хранилище читается при
+// каждом вызове.
+func (r *Registry) SetFiles(s files.Store) { r.files = s }
 
 // NewRegistry создаёт реестр.
 func NewRegistry(client *ozon.Client, safety Safety, server *mcp.Server) *Registry {
@@ -64,6 +75,17 @@ type Spec struct {
 	// разное, и совет не из того класса стоит человеку вечера.
 	// Пустая строка — «объяснить нечем, работает общий разбор».
 	Hint func(args map[string]any, err error) string
+
+	// Do заменяет одиночный вызов Path, когда инструменту нужно больше
+	// одного обращения к Ozon или ответ — не JSON (файл, свод). Все
+	// заслоны Add — разбор аргументов, проверка записи, размер пачки,
+	// подсказки и обрезка — при этом остаются на месте: ради этого
+	// Do и живёт внутри Spec, а не в отдельном AddCustom.
+	//
+	// payload — результат Build (или аргументы как есть). Возвращаемое
+	// значение: string уходит текстом, json.RawMessage — как JSON,
+	// всё остальное сериализуется.
+	Do func(ctx context.Context, c *ozon.Client, payload any) (any, error)
 }
 
 // Add регистрирует инструмент, описанный спецификацией.
@@ -105,9 +127,16 @@ func (r *Registry) Add(s Spec) {
 				resp json.RawMessage
 				err  error
 			)
-			if s.Get {
+			switch {
+			case s.Do != nil:
+				var out any
+				out, err = s.Do(ctx, r.clientFor(ctx), payload)
+				if err == nil {
+					resp, err = toRaw(out)
+				}
+			case s.Get:
 				resp, err = r.clientFor(ctx).Get(ctx, s.Path)
-			} else {
+			default:
 				resp, err = r.clientFor(ctx).Call(ctx, s.Path, payload)
 			}
 			if err != nil {
@@ -122,6 +151,24 @@ func (r *Registry) Add(s Spec) {
 			return r.format(ctx, resp), nil
 		},
 	})
+}
+
+// toRaw приводит результат Do к виду, который понимает format.
+func toRaw(v any) (json.RawMessage, error) {
+	switch out := v.(type) {
+	case string:
+		return json.RawMessage(out), nil
+	case json.RawMessage:
+		return out, nil
+	case []byte:
+		return json.RawMessage(out), nil
+	default:
+		b, err := json.Marshal(out)
+		if err != nil {
+			return nil, fmt.Errorf("сериализация ответа: %w", err)
+		}
+		return b, nil
+	}
 }
 
 // AddCustom регистрирует инструмент с собственным обработчиком —
