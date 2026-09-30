@@ -199,6 +199,11 @@ func (c *Client) CallInto(ctx context.Context, path string, payload, out any) er
 }
 
 func (c *Client) do(ctx context.Context, method, path string, body []byte) (json.RawMessage, error) {
+	return c.doAs(ctx, method, path, body, "application/json")
+}
+
+// doAs — один запрос с заданным Content-Type тела.
+func (c *Client) doAs(ctx context.Context, method, path string, body []byte, contentType string) (json.RawMessage, error) {
 	// GET идёт без тела: nil-тело и заголовок Content-Type — вещи
 	// разные, и отправлять второе без первого значит объявить формат
 	// того, чего нет.
@@ -214,7 +219,7 @@ func (c *Client) do(ctx context.Context, method, path string, body []byte) (json
 	req.Header.Set("Client-Id", c.clientID)
 	req.Header.Set("Api-Key", c.apiKey)
 	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Content-Type", contentType)
 	}
 
 	resp, err := c.http.Do(req)

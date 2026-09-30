@@ -1,6 +1,6 @@
 # ozon-seller-mcp
 
-MCP-сервер для [Ozon Seller API](https://docs.ozon.ru/api/seller). Даёт Claude доступ к кабинету продавца: каталог, цены, остатки, акции и автостратегии, аналитика, финансы, отправления FBS со сборкой, этикетками и актами, поставки FBO, возвраты, вопросы покупателей, сертификаты и штрихкоды — 84 инструмента.
+MCP-сервер для [Ozon Seller API](https://docs.ozon.ru/api/seller). Даёт Claude доступ к кабинету продавца: каталог, цены, остатки, акции и автостратегии, аналитика, финансы, отправления FBS со сборкой, этикетками и актами, поставки FBO, возвраты, вопросы покупателей, сертификаты (с загрузкой скана) и штрихкоды — 92 инструмента.
 
 Внутри лежит и самостоятельный Go-клиент Seller API (`ozon/`) — его можно использовать отдельно от MCP.
 
@@ -178,13 +178,15 @@ cd ozon-seller-mcp
 | Возвраты | `returns_list`, `returns_dropoff_points` |
 | Вопросы о товаре | `questions_count`, `questions_list`, `question_info`, `question_answers` |
 | Вопросы о товаре (запись) | `question_answer_create`, `question_change_status` |
-| Сертификаты и штрихкоды | `certification_required`, `certificates_list`, `certificate_products` |
-| Сертификаты и штрихкоды (запись) | `certificate_bind`, `certificate_unbind`, `barcode_generate`, `barcode_bind` |
+| Сертификаты | `certification_required`, `certificates_list`, `certificate_info`, `certificate_products` |
+| Сертификаты: справочники | `certificate_types`, `certificate_accordance_types`, `certificate_statuses`, `certificate_rejection_reasons`, `certificate_product_statuses` |
+| Сертификаты (запись) | `certificate_create`, `certificate_bind`, `certificate_unbind`, `certificate_delete` |
+| Штрихкоды (запись) | `barcode_generate`, `barcode_bind` |
 | Диагностика | `status`, `api_selftest` |
 
 Все имена — с префиксом `ozon_`.
 
-Отзывы и вопросы о товаре Ozon открывает только продавцам с подпиской Premium Plus: без неё эти методы отвечают отказом прав, а не пустым списком. Загрузка файла сертификата остаётся в кабинете — она идёт `multipart/form-data`, а клиент отправляет JSON; всё вокруг неё (что требуется, что загружено, к чему привязано) доступно отсюда.
+Отзывы и вопросы о товаре Ozon открывает только продавцам с подпиской Premium Plus: без неё эти методы отвечают отказом прав, а не пустым списком. Скан сертификата `ozon_certificate_create` принимает либо путём к файлу (`file_path`, только при запуске по stdio — сервис читать файлы своего диска по слову модели не должен), либо содержимым в `file_base64`; потолок — 10 файлов по 10 МБ.
 
 ## Про версии методов Ozon
 

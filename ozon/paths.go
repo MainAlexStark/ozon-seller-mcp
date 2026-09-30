@@ -193,14 +193,20 @@ const (
 
 	// --- Сертификаты и декларации ---
 	//
-	// Загрузка самого файла (/v1/product/certificate/create) идёт
-	// multipart/form-data, а клиент этого пакета отправляет только
-	// JSON. Поэтому загрузка остаётся ручной операцией в кабинете,
-	// а через MCP доступно всё вокруг неё: что вообще требуется,
-	// что уже загружено, к чему привязано и прошло ли проверку.
+	// Загрузка файла (create) идёт multipart/form-data через
+	// Client.PostForm, остальное — обычный JSON. Два справочника
+	// (types и accordance-types) Ozon отдаёт на GET, а не на POST.
 	PathCertificationList       = "/v2/product/certification/list"
 	PathCertificateList         = "/v1/product/certificate/list"
 	PathCertificateProductsList = "/v1/product/certificate/products/list"
 	PathCertificateBind         = "/v1/product/certificate/bind"
 	PathCertificateUnbind       = "/v1/product/certificate/unbind"
+	PathCertificateCreate       = "/v1/product/certificate/create"
+	PathCertificateDelete       = "/v1/product/certificate/delete"
+	PathCertificateInfo         = "/v1/product/certificate/info"
+	PathCertificateTypes        = "/v1/product/certificate/types"
+	PathCertificateAccordance   = "/v2/product/certificate/accordance-types/list"
+	PathCertificateStatuses     = "/v1/product/certificate/status/list"
+	PathCertificateRejections   = "/v1/product/certificate/rejection_reasons/list"
+	PathCertificateProductState = "/v1/product/certificate/product_status/list"
 )

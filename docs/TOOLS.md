@@ -1,6 +1,6 @@
 # Инструменты
 
-84 инструмента. Помеченные **ЗАПИСЬ** изменяют данные в магазине и работают только при `OZON_ALLOW_WRITES=true`.
+92 инструмента. Помеченные **ЗАПИСЬ** изменяют данные в магазине и работают только при `OZON_ALLOW_WRITES=true`.
 
 ## Диагностика
 
@@ -169,13 +169,25 @@
 |---|---|
 | `ozon_certification_required` | Категории, где сертификат или декларация обязательны |
 | `ozon_certificates_list` | Загруженные документы: номер, тип, статус, срок действия |
+| `ozon_certificate_info` | Один документ по номеру: статус, причина отказа, комментарий модератора, `certificate_id` |
 | `ozon_certificate_products` | Товары, привязанные к документу, и статус проверки каждого |
+| `ozon_certificate_types` | Справочник типов документов (коды для `type_code`) |
+| `ozon_certificate_accordance_types` | Справочник типов соответствия (коды для `accordance_type_code`) |
+| `ozon_certificate_statuses` | Статусы проверки документа |
+| `ozon_certificate_rejection_reasons` | Причины отказа в проверке |
+| `ozon_certificate_product_statuses` | Статусы товара при привязке к документу |
+| `ozon_certificate_create` | **ЗАПИСЬ** Загрузить документ со сканом (multipart) |
 | `ozon_certificate_bind` | **ЗАПИСЬ** Привязать документ к товарам |
 | `ozon_certificate_unbind` | **ЗАПИСЬ** Отвязать товары от документа |
+| `ozon_certificate_delete` | **ЗАПИСЬ** Удалить документ (требует `confirm_delete: true`) |
 | `ozon_barcode_generate` | **ЗАПИСЬ** Выпустить штрихкоды для товаров, у которых их нет |
 | `ozon_barcode_bind` | **ЗАПИСЬ** Привязать штрихкоды, уже напечатанные на упаковке |
 
-**Загрузки файла сертификата здесь нет.** Метод `/v1/product/certificate/create` принимает `multipart/form-data`, а клиент отправляет JSON; переписывать его ради операции, которая всё равно требует человека с документом на руках, смысла мало. Файл загружается в кабинете — всё вокруг него доступно отсюда.
+**Загрузка.** `ozon_certificate_create` отправляет `multipart/form-data` (`Client.PostForm`, без повторов на 5xx: повтор создания мог бы породить дубликат документа). Скан передаётся путём `file_path` — только при запуске по stdio — либо `file_base64` вместе с `file_name`; форматы jpg, jpeg, png, pdf; не больше 10 файлов по 10 МБ (это защита сервера, не требование Ozon). Коды `type_code` и `accordance_type_code` — из справочников `ozon_certificate_types` и `ozon_certificate_accordance_types`. Даты — `ГГГГ-ММ-ДД`, уходят в форму как полночь UTC.
+
+Загруженный документ проходит модерацию: `create` отвечает идентификатором, а результат — в `ozon_certificate_info`. Чтобы документ заработал, его нужно привязать (`ozon_certificate_bind`).
+
+**Удаление необратимо.** Документ пропадает со всех товаров; поэтому `ozon_certificate_delete` требует `confirm_delete: true` — по образцу отмены отправления FBS.
 
 Привязка не мгновенная: успешный ответ `ozon_certificate_bind` означает «принято», а не «товары проверены». Результат показывает `ozon_certificate_products`.
 
@@ -284,7 +296,7 @@
 
 **«Товар не принимают на складе»** — `ozon_product_info` покажет, есть ли у карточки штрихкод. Если нет — `ozon_barcode_generate`; если код напечатан на упаковке производителя — `ozon_barcode_bind`, иначе в кабинете окажется два кода на один товар.
 
-**«Нужен ли сертификат на этот товар»** — `ozon_certification_required` по категории, затем `ozon_certificates_list`: возможно, подходящий документ уже загружен и его достаточно привязать через `ozon_certificate_bind`.
+**«Нужен ли сертификат на этот товар»** — `ozon_certification_required` по категории, затем `ozon_certificates_list`: возможно, подходящий документ уже загружен и его достаточно привязать через `ozon_certificate_bind`. Если нет — `ozon_certificate_types` и `ozon_certificate_accordance_types` дают коды, `ozon_certificate_create` загружает скан, `ozon_certificate_bind` привязывает, `ozon_certificate_info` и `ozon_certificate_products` показывают, прошла ли проверка.
 
 **«Стоит ли участвовать в этой акции»** — `ozon_actions_list` покажет условия, `ozon_action_candidates` — потолок цены по каждому товару, `ozon_prices_info` — комиссии и логистику. Считать нужно от выплаты, а не от цены витрины: акционная цена минус комиссия минус логистика и есть ответ, окупается участие или нет.
 
