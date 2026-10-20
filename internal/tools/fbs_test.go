@@ -86,7 +86,7 @@ func TestUnfulfilledGetsWindowAroundNow(t *testing.T) {
 	// «Что собирать» без дат. Метод требует пару дат, а просроченный
 	// заказ — самый срочный, поэтому окно стоит вокруг «сейчас».
 	o := &routeOzon{routes: map[string]func(map[string]any) (int, string){
-		"/v3/posting/fbs/unfulfilled/list": ok(`{"result":{"postings":[],"count":0}}`),
+		"/v4/posting/fbs/unfulfilled/list": ok(`{"postings":[],"count":0,"has_next":false}`),
 	}}
 	server, _, closeFn := fbsServer(t, ModeReadOnly, o)
 	defer closeFn()
@@ -95,14 +95,14 @@ func TestUnfulfilledGetsWindowAroundNow(t *testing.T) {
 		t.Fatalf("вызов без дат должен проходить: %s", out)
 	}
 
-	calls := o.callsTo("/v3/posting/fbs/unfulfilled/list")
+	calls := o.callsTo("/v4/posting/fbs/unfulfilled/list")
 	if len(calls) != 1 {
 		t.Fatalf("ожидался один вызов, было %d", len(calls))
 	}
 	body := calls[0].Body
 	filter, _ := body["filter"].(map[string]any)
-	if filter["status"] != "awaiting_packaging" {
-		t.Errorf("status не перенесён в filter: %v", filter)
+	if st, _ := filter["statuses"].([]any); len(st) != 1 || st[0] != "awaiting_packaging" {
+		t.Errorf("status не перенесён в filter.statuses: %v", filter)
 	}
 	if _, leaked := body["status"]; leaked {
 		t.Error("status на верхнем уровне не должен уходить в Ozon")
@@ -513,5 +513,48 @@ func TestCancelReasonsPicksMethod(t *testing.T) {
 	per := o.callsTo("/v1/posting/fbs/cancel-reason")
 	if len(per) != 1 || per[0].Body["related_posting_numbers"] == nil {
 		t.Errorf("с номерами — причины для отправлений: %v", per)
+	}
+}
+
+func TestPostingsListSpeaksV4(t *testing.T) {
+	// Старые вызовы (dir, offset, status строкой, limit 1000) должны
+	// уходить в /v4/posting/fbs/list в новом формате, а не отказом.
+	o := &routeOzon{routes: map[string]func(map[string]any) (int, string){
+		"/v4/posting/fbs/list": ok(`{"postings":[],"has_next":false,"cursor":""}`),
+	}}
+	server, _, closeFn := fbsServer(t, ModeReadOnly, o)
+	defer closeFn()
+
+	args := map[string]any{
+		"dir":    "asc",
+		"offset": 50,
+		"limit":  1000,
+		"filter": map[string]any{"status": "awaiting_packaging"},
+	}
+	if out, isErr := callTool(t, server, "ozon_postings_list", args); isErr {
+		t.Fatalf("вызов должен проходить: %s", out)
+	}
+	calls := o.callsTo("/v4/posting/fbs/list")
+	if len(calls) != 1 {
+		t.Fatalf("ожидался один вызов, было %d", len(calls))
+	}
+	body := calls[0].Body
+	if body["sort_dir"] != "ASC" {
+		t.Errorf("sort_dir: %v", body["sort_dir"])
+	}
+	for _, k := range []string{"dir", "offset", "status"} {
+		if _, leaked := body[k]; leaked {
+			t.Errorf("%s не должен уходить в v4", k)
+		}
+	}
+	if l, _ := body["limit"].(float64); l != 100 {
+		t.Errorf("limit не опущен до 100: %v", body["limit"])
+	}
+	filter, _ := body["filter"].(map[string]any)
+	if st, _ := filter["statuses"].([]any); len(st) != 1 || st[0] != "awaiting_packaging" {
+		t.Errorf("statuses: %v", filter)
+	}
+	if filter["since"] == nil || filter["to"] == nil {
+		t.Errorf("период не подставлен: %v", filter)
 	}
 }

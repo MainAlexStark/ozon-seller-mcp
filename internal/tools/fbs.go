@@ -46,23 +46,23 @@ func (r *Registry) registerFBSRead() {
 			"для отгрузки — awaiting_deliver.",
 		Schema: schema(obj{
 			"status": obj{"type": "string", "enum": fbsUnfulfilledStatuses,
-				"description": "Короткий способ задать filter.status"},
+				"description": "Короткий способ задать filter.statuses одним статусом"},
 			"filter": schema(obj{
 				"cutoff_from":          str("Крайний срок сборки: от, RFC3339"),
 				"cutoff_to":            str("Крайний срок сборки: до, RFC3339"),
 				"delivering_date_from": str("Дата передачи в доставку: от, RFC3339"),
 				"delivering_date_to":   str("Дата передачи в доставку: до, RFC3339"),
-				"status":               obj{"type": "string", "enum": fbsUnfulfilledStatuses},
-				"delivery_method_id":   arr(obj{"type": "integer"}, "Методы доставки"),
-				"warehouse_id":         arr(obj{"type": "integer"}, "Склады"),
+				"statuses":             arr(obj{"type": "string", "enum": fbsUnfulfilledStatuses}, "Статусы"),
+				"delivery_method_ids":  arr(obj{"type": "integer"}, "Методы доставки"),
+				"warehouse_ids":        arr(obj{"type": "integer"}, "Склады"),
 			}),
-			"dir":    obj{"type": "string", "enum": []string{"ASC", "DESC"}},
-			"limit":  obj{"type": "integer", "default": 100, "maximum": 1000},
-			"offset": num("Смещение"),
-			"with":   obj{"type": "object", "description": "Что добавить: analytics_data, barcodes, financial_data, translit"},
+			"sort_dir": obj{"type": "string", "enum": []string{"ASC", "DESC"}},
+			"limit":    obj{"type": "integer", "default": 100, "maximum": maxPostingsV4Limit},
+			"cursor":   str("Курсор следующей страницы из прошлого ответа (cursor); пусто — первая страница"),
+			"with":     obj{"type": "object", "description": "Что добавить: analytics_data, barcodes, financial_data, legal_info"},
 		}),
 		Build: func(a map[string]any) (any, error) {
-			return capLimit(withLimit(withUnfulfilledWindow(a, 14), 100), 1000), nil
+			return toV4PostingList(withLimit(withUnfulfilledWindow(a, 14), 100)), nil
 		},
 	})
 
@@ -211,13 +211,6 @@ func withUnfulfilledWindow(a map[string]any, days int) map[string]any {
 	if filter == nil {
 		filter = map[string]any{}
 	}
-
-	if st, ok := a["status"].(string); ok && st != "" {
-		if cur, _ := filter["status"].(string); cur == "" {
-			filter["status"] = st
-		}
-	}
-	delete(a, "status")
 
 	has := func(k string) bool {
 		v, ok := filter[k]
@@ -960,4 +953,77 @@ func humanBytes(n int) string {
 		return fmt.Sprintf("%.0f КБ", float64(n)/(1<<10))
 	}
 	return fmt.Sprintf("%d Б", n)
+}
+
+// maxPostingsV4Limit — потолок limit у списков отправлений v4
+// (/v4/posting/fbs/list и /v4/posting/fbs/unfulfilled/list).
+const maxPostingsV4Limit = 100
+
+// toV4PostingList приводит аргументы списка отправлений к формату v4.
+//
+// Старые вызовы (v3) никто не переписывал разом — ни сценарии, ни
+// клиенты, — поэтому здесь принимается и прежнее: status строкой (сверху
+// или в filter) превращается в filter.statuses, dir — в sort_dir,
+// старые имена фильтров по складам и методам доставки — в новые.
+// offset в v4 нет совсем: постраничность только курсором, и смещение
+// просто отбрасывается — первая страница честнее отказа.
+func toV4PostingList(a map[string]any) map[string]any {
+	if a == nil {
+		a = map[string]any{}
+	}
+	filter, _ := a["filter"].(map[string]any)
+	if filter == nil {
+		filter = map[string]any{}
+	}
+
+	var statuses []any
+	if v, ok := filter["statuses"].([]any); ok {
+		statuses = v
+	} else if v, ok := filter["statuses"].([]string); ok {
+		for _, s := range v {
+			statuses = append(statuses, s)
+		}
+	}
+	if len(statuses) == 0 {
+		for _, v := range []any{filter["status"], a["status"]} {
+			if s, ok := v.(string); ok && s != "" {
+				statuses = []any{s}
+				break
+			}
+		}
+	}
+	if len(statuses) > 0 {
+		filter["statuses"] = statuses
+	}
+	delete(filter, "status")
+	delete(a, "status")
+
+	for old, nw := range map[string]string{
+		"warehouse_id":       "warehouse_ids",
+		"delivery_method_id": "delivery_method_ids",
+		"provider_id":        "provider_ids",
+	} {
+		if v, ok := filter[old]; ok {
+			if _, has := filter[nw]; !has {
+				filter[nw] = v
+			}
+			delete(filter, old)
+		}
+	}
+	a["filter"] = filter
+
+	if d, ok := a["dir"].(string); ok {
+		if _, has := a["sort_dir"]; !has {
+			a["sort_dir"] = d
+		}
+	}
+	delete(a, "dir")
+	if d, ok := a["sort_dir"].(string); ok {
+		a["sort_dir"] = strings.ToUpper(d)
+	}
+	delete(a, "offset")
+	if c, ok := a["cursor"].(string); ok && c == "" {
+		delete(a, "cursor")
+	}
+	return capLimit(a, maxPostingsV4Limit)
 }

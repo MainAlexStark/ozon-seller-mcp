@@ -19,6 +19,8 @@ package ozon
 //	/v1/delivery-method/list  -> /v2/delivery-method/list
 //	/v1/product/info/stocks-by-warehouse/fbs -> /v2/...
 //	/v2/posting/fbo/list      -> /v3/posting/fbo/list (отключён 31.08.2026)
+//	/v3/posting/fbs/list      -> /v4/posting/fbs/list (курсор, limit до 100)
+//	/v3/posting/fbs/unfulfilled/list -> /v4/... (отключён 31.08.2026)
 //	/v2/supply-order/{list,get} -> /v3/supply-order/{list,get}
 //	/v1/analytics/stock_on_warehouses -> /v2/analytics/stock_on_warehouses
 //
@@ -86,11 +88,11 @@ const (
 	PathWarehouseList = "/v2/warehouse/list"
 
 	// --- Отправления FBS ---
-	PathPostingFBSList = "/v3/posting/fbs/list"
+	PathPostingFBSList = "/v4/posting/fbs/list"
 	PathPostingFBSGet  = "/v3/posting/fbs/get"
 
 	// --- FBS: сборка и работа с отправлением ---
-	PathPostingFBSUnfulfilled  = "/v3/posting/fbs/unfulfilled/list"
+	PathPostingFBSUnfulfilled  = "/v4/posting/fbs/unfulfilled/list"
 	PathPostingFBSByBarcode    = "/v2/posting/fbs/get-by-barcode"
 	PathPostingFBSRestrictions = "/v1/posting/fbs/restrictions"
 	PathPostingFBSShip         = "/v4/posting/fbs/ship"

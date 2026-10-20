@@ -62,20 +62,22 @@ func (r *Registry) RegisterAnalytics() {
 			"Вход для планирования того, что нужно произвести и отгрузить. " +
 			"Если период не задан, берутся последние 7 дней.",
 		Schema: schema(obj{
+			"status": obj{"type": "string", "description": "Короткий способ задать filter.statuses одним статусом"},
 			"filter": schema(obj{
-				"since":  str("Начало периода, RFC3339"),
-				"to":     str("Конец периода, RFC3339"),
-				"status": str("Статус отправления, например awaiting_packaging"),
+				"since":    str("Начало периода, RFC3339"),
+				"to":       str("Конец периода, RFC3339"),
+				"statuses": arr(obj{"type": "string"}, "Статусы отправлений, например awaiting_packaging"),
 			}),
-			"limit":  obj{"type": "integer", "default": 50, "maximum": 1000},
-			"offset": num("Смещение"),
-			"with":   obj{"type": "object", "description": "Что включить в ответ: analytics_data, financial_data"},
+			"limit":    obj{"type": "integer", "default": 50, "maximum": maxPostingsV4Limit},
+			"cursor":   str("Курсор следующей страницы из прошлого ответа (cursor); пусто — первая страница"),
+			"sort_dir": obj{"type": "string", "enum": []string{"ASC", "DESC"}},
+			"with":     obj{"type": "object", "description": "Что включить в ответ: analytics_data, barcodes, financial_data, legal_info"},
 		}),
 		Build: func(a map[string]any) (any, error) {
 			// Период обязателен: без него Ozon отвечает «processed_at_to
 			// must be set», а спрашивают обычно просто «что там с
 			// заказами» — без дат вообще.
-			return withLimit(withRecentPeriod(a, 7), 50), nil
+			return toV4PostingList(withLimit(withRecentPeriod(a, 7), 50)), nil
 		},
 	})
 

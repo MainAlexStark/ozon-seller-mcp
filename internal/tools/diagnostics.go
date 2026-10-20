@@ -45,18 +45,18 @@ func probes() []probe {
 		post("ozon_warehouse_list", ozon.PathWarehouseList, obj{}),
 		post("ozon_category_tree", ozon.PathCategoryTree, obj{"language": "RU"}),
 		post("ozon_finance_accrual_types", ozon.PathFinanceAccrualTypes, obj{}),
-		post("ozon_postings_list", ozon.PathPostingFBSList, obj{
+		post("ozon_postings_list", ozon.PathPostingFBSList, toV4PostingList(obj{
 			"filter": obj{
 				"since": time.Now().AddDate(0, 0, -7).Format(time.RFC3339),
 				"to":    time.Now().Format(time.RFC3339),
 			},
 			"limit": 1,
-		}),
+		})),
 
 		// FBS: сборка и отгрузки. Тела собираются тем же кодом, что и
 		// у инструментов: у необработанных обязательна пара дат, у
 		// отгрузок — период, и проверять стоит ровно то, что уходит в бою.
-		post("ozon_fbs_unfulfilled_list", ozon.PathPostingFBSUnfulfilled, withUnfulfilledWindow(obj{"limit": 1}, 14)),
+		post("ozon_fbs_unfulfilled_list", ozon.PathPostingFBSUnfulfilled, toV4PostingList(withUnfulfilledWindow(obj{"limit": 1}, 14))),
 		post("ozon_fbs_acts_list", ozon.PathFBSActList, withActPeriod(obj{"limit": 1}, 14)),
 		post("ozon_fbs_cancel_reasons", ozon.PathPostingFBSCancelReasons, obj{}),
 
