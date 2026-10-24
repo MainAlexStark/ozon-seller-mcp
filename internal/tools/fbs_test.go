@@ -1,11 +1,12 @@
 package tools
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -121,9 +122,33 @@ func TestUnfulfilledGetsWindowAroundNow(t *testing.T) {
 	}
 }
 
-func TestLabelsSavedAsFileFromBinaryPDF(t *testing.T) {
+// labelFileServer отдаёт готовый файл этикеток, как CDN Ozon.
+func labelFileServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(fakePDF))
+	}))
+	t.Cleanup(srv.Close)
+	labelPollEvery = 5 * time.Millisecond
+	return srv
+}
+
+func TestLabelsViaV3TaskSavedAsFile(t *testing.T) {
+	cdn := labelFileServer(t)
+	polls := 0
 	o := &routeOzon{routes: map[string]func(map[string]any) (int, string){
-		"/v2/posting/fbs/package-label": ok(fakePDF),
+		"/v3/posting/fbs/package-label/create": ok(`{"tasks":[{"task_id":8,"task_type":"small_label"},{"task_id":7,"task_type":"big_label"}]}`),
+		"/v2/posting/fbs/package-label/get": func(body map[string]any) (int, string) {
+			id := body["task_id"].(float64)
+			if id == 7 {
+				polls++
+				if polls == 1 {
+					return http.StatusOK, `{"status":{"code":"in_progress"}}`
+				}
+			}
+			return http.StatusOK, `{"status":{"code":"completed","postings_count":2,"printed_postings_count":2},
+				"file_url":"` + cdn.URL + `/label-` + strconv.Itoa(int(id)) + `.pdf"}`
+		},
 	}}
 	server, dir, closeFn := fbsServer(t, ModeReadOnly, o)
 	defer closeFn()
@@ -134,11 +159,17 @@ func TestLabelsSavedAsFileFromBinaryPDF(t *testing.T) {
 	if isErr {
 		t.Fatalf("этикетки должны печататься и в режиме чтения: %s", out)
 	}
-
-	calls := o.callsTo("/v2/posting/fbs/package-label")
-	nums, _ := calls[0].Body["posting_number"].([]any)
+	if len(o.callsTo("/v2/posting/fbs/package-label")) != 0 {
+		t.Error("устаревший синхронный метод не должен вызываться")
+	}
+	created := o.callsTo("/v3/posting/fbs/package-label/create")
+	nums, _ := created[0].Body["posting_numbers"].([]any)
 	if len(nums) != 2 {
-		t.Errorf("повторы номеров должны схлопываться: %v", nums)
+		t.Errorf("номера уходят в posting_numbers без повторов: %v", created[0].Body)
+	}
+	gets := o.callsTo("/v2/posting/fbs/package-label/get")
+	if len(gets) < 3 || gets[0].Body["task_id"] != float64(7) {
+		t.Errorf("сначала опрашивается обычная этикетка и до готовности: %v", gets)
 	}
 
 	entries, _ := os.ReadDir(dir)
@@ -147,53 +178,24 @@ func TestLabelsSavedAsFileFromBinaryPDF(t *testing.T) {
 	}
 	path := filepath.Join(dir, entries[0].Name())
 	data, _ := os.ReadFile(path)
-	if string(data) != fakePDF {
-		t.Error("содержимое файла не совпадает с ответом Ozon")
+	if string(data) != fakePDF || !strings.HasSuffix(path, ".pdf") {
+		t.Errorf("файл этикеток сохранён неверно: %s", path)
 	}
-	if !strings.HasSuffix(path, ".pdf") {
-		t.Errorf("у файла должно быть расширение .pdf: %s", path)
-	}
-	if !strings.Contains(out, path) {
-		t.Errorf("в ответе должен быть путь к файлу:\n%s", out)
+	if !strings.Contains(out, path) || strings.Index(out, path) > strings.Index(out, "/label-8.pdf") {
+		t.Errorf("первым в ответе — сохранённая обычная этикетка, потом ссылка на маленькую:\n%s", out)
 	}
 	if strings.Contains(out, "PDF-1.4") {
 		t.Error("содержимое файла не должно попадать в ответ")
 	}
 }
 
-func TestLabelsFromJSONEnvelope(t *testing.T) {
-	// Тот же метод может ответить JSON с base64 — понимать надо оба вида.
-	env, _ := json.Marshal(map[string]string{
-		"content_type": "application/pdf",
-		"file_name":    "ticket.pdf",
-		"file_content": base64.StdEncoding.EncodeToString([]byte(fakePDF)),
-	})
+func TestManyLabelsReturnOzonLink(t *testing.T) {
 	o := &routeOzon{routes: map[string]func(map[string]any) (int, string){
-		"/v2/posting/fbs/package-label": ok(string(env)),
+		"/v3/posting/fbs/package-label/create": ok(`{"tasks":[{"task_id":7,"task_type":"big_label"}]}`),
+		"/v2/posting/fbs/package-label/get":    ok(`{"status":{"code":"completed"},"file_url":"https://cdn.ozon.ru/labels/7.pdf"}`),
 	}}
+	labelFileServer(t)
 	server, dir, closeFn := fbsServer(t, ModeReadOnly, o)
-	defer closeFn()
-
-	if out, isErr := callTool(t, server, "ozon_fbs_labels", map[string]any{"posting_numbers": []any{"1-1-1"}}); isErr {
-		t.Fatal(out)
-	}
-	entries, _ := os.ReadDir(dir)
-	if len(entries) != 1 || !strings.HasPrefix(entries[0].Name(), "ticket_") {
-		t.Fatalf("ожидался файл с именем от Ozon: %v", entries)
-	}
-	data, _ := os.ReadFile(filepath.Join(dir, entries[0].Name()))
-	if string(data) != fakePDF {
-		t.Error("base64 не раскодирован")
-	}
-}
-
-func TestManyLabelsGoThroughTask(t *testing.T) {
-	// Больше 20 отправлений синхронный метод не принимает — нужна задача.
-	o := &routeOzon{routes: map[string]func(map[string]any) (int, string){
-		"/v2/posting/fbs/package-label/create": ok(`{"result":{"tasks":[{"task_id":7,"task_type":"big_label"}]}}`),
-		"/v1/posting/fbs/package-label/get":    ok(`{"result":{"status":"completed","file_url":"https://cdn.ozon.ru/labels/7.pdf"}}`),
-	}}
-	server, _, closeFn := fbsServer(t, ModeReadOnly, o)
 	defer closeFn()
 
 	var nums []any
@@ -207,15 +209,32 @@ func TestManyLabelsGoThroughTask(t *testing.T) {
 	if !strings.Contains(out, "https://cdn.ozon.ru/labels/7.pdf") {
 		t.Errorf("в ответе должна быть ссылка на файл Ozon:\n%s", out)
 	}
-	if got := o.callsTo("/v1/posting/fbs/package-label/get"); len(got) == 0 || got[0].Body["task_id"] != float64(7) {
-		t.Errorf("задание должно запрашиваться по task_id: %v", got)
+	if entries, _ := os.ReadDir(dir); len(entries) != 0 {
+		t.Error("большая пачка не скачивается")
+	}
+}
+
+func TestLabelsUnprintedExplained(t *testing.T) {
+	labelFileServer(t)
+	o := &routeOzon{routes: map[string]func(map[string]any) (int, string){
+		"/v3/posting/fbs/package-label/create": ok(`{"tasks":[{"task_id":7,"task_type":"big_label"}]}`),
+		"/v2/posting/fbs/package-label/get": ok(`{"status":{"code":"error","postings_count":1,"printed_postings_count":0,
+			"unprinted_postings":[{"posting_number":"1-1-1","message":"posting is not in awaiting_deliver"}]},
+			"error":{"code":"NO_LABELS","message":"no labels"}}`),
+	}}
+	server, _, closeFn := fbsServer(t, ModeReadOnly, o)
+	defer closeFn()
+
+	out, isErr := callTool(t, server, "ozon_fbs_labels", map[string]any{"posting_numbers": []any{"1-1-1"}})
+	if !isErr || !strings.Contains(out, "1-1-1: posting is not in awaiting_deliver") || !strings.Contains(out, "awaiting_deliver") {
+		t.Errorf("отправление без этикетки должно называться с причиной:\n%s", out)
 	}
 }
 
 func TestLabelsNotReadyExplained(t *testing.T) {
 	o := &routeOzon{routes: map[string]func(map[string]any) (int, string){
-		"/v2/posting/fbs/package-label": func(map[string]any) (int, string) {
-			return http.StatusBadRequest, `{"code":"POSTINGS_NOT_READY","message":"The next postings are not ready: 1-1-1"}`
+		"/v3/posting/fbs/package-label/create": func(map[string]any) (int, string) {
+			return http.StatusBadRequest, `{"code":"INVALID_ARGUMENT","message":"The next postings aren't ready: 1-1-1"}`
 		},
 	}}
 	server, _, closeFn := fbsServer(t, ModeReadOnly, o)
@@ -230,18 +249,35 @@ func TestLabelsNotReadyExplained(t *testing.T) {
 	}
 }
 
-func TestFilesNeedStore(t *testing.T) {
-	// Без хранилища файл молча не теряется — инструмент говорит, что
-	// сохранять некуда.
+func TestLabelsBare400NotAboutCategory(t *testing.T) {
+	// 400 без пояснения — не повод советовать характеристики категории.
 	o := &routeOzon{routes: map[string]func(map[string]any) (int, string){
-		"/v2/posting/fbs/package-label": ok(fakePDF),
+		"/v3/posting/fbs/package-label/create": func(map[string]any) (int, string) {
+			return http.StatusBadRequest, `{"code":"INVALID_ARGUMENT","message":""}`
+		},
+	}}
+	server, _, closeFn := fbsServer(t, ModeReadOnly, o)
+	defer closeFn()
+
+	out, isErr := callTool(t, server, "ozon_fbs_labels", map[string]any{"posting_numbers": []any{"1-1-1"}})
+	if !isErr || strings.Contains(out, "ozon_category_attributes") || !strings.Contains(out, "awaiting_deliver") {
+		t.Errorf("подсказка должна быть про статус отправления:\n%s", out)
+	}
+}
+
+func TestLabelsWithoutStoreGiveOzonLink(t *testing.T) {
+	// Без хранилища файл не теряется: остаётся ссылка Ozon.
+	labelFileServer(t)
+	o := &routeOzon{routes: map[string]func(map[string]any) (int, string){
+		"/v3/posting/fbs/package-label/create": ok(`{"tasks":[{"task_id":7,"task_type":"big_label"}]}`),
+		"/v2/posting/fbs/package-label/get":    ok(`{"status":{"code":"completed"},"file_url":"https://cdn.ozon.ru/labels/7.pdf"}`),
 	}}
 	_, server, closeFn := fakeOzon(t, ModeReadOnly, o.handler(t))
 	defer closeFn()
 
 	out, isErr := callTool(t, server, "ozon_fbs_labels", map[string]any{"posting_numbers": []any{"1-1-1"}})
-	if !isErr || !strings.Contains(out, "OZON_FILES_DIR") {
-		t.Errorf("ожидался отказ с подсказкой про хранилище:\n%s", out)
+	if isErr || !strings.Contains(out, "https://cdn.ozon.ru/labels/7.pdf") {
+		t.Errorf("ожидалась ссылка Ozon:\n%s", out)
 	}
 }
 

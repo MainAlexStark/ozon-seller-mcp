@@ -106,12 +106,12 @@ const (
 
 	// --- FBS: этикетки ---
 	//
-	// Синхронный метод отдаёт PDF сразу, но не больше чем на 20
-	// отправлений. Для большего числа — задание: create возвращает
-	// идентификатор, get — ссылку на готовый файл на стороне Ozon.
-	PathPostingFBSLabel       = "/v2/posting/fbs/package-label"
-	PathPostingFBSLabelCreate = "/v2/posting/fbs/package-label/create"
-	PathPostingFBSLabelGet    = "/v1/posting/fbs/package-label/get"
+	// Только заданием: create (posting_numbers) возвращает задания на
+	// обычную и маленькую этикетку, get по task_id — статус и ссылку на
+	// файл на стороне Ozon. Синхронный /v2/posting/fbs/package-label и
+	// задания v1/v2 Ozon отключает 2 ноября 2026 года.
+	PathPostingFBSLabelCreate = "/v3/posting/fbs/package-label/create"
+	PathPostingFBSLabelGet    = "/v2/posting/fbs/package-label/get"
 
 	// --- FBS: отгрузка (акт, накладная, пропуск) ---
 	//

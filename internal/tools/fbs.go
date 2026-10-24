@@ -1,9 +1,12 @@
 package tools
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"slices"
 	"strings"
@@ -279,9 +282,11 @@ func moscow() *time.Location {
 
 // --- Документы ---
 
-// maxSyncLabels — сколько отправлений принимает синхронный метод
-// этикеток. Больше — только через задание.
-const maxSyncLabels = 20
+// maxDownloadLabels — до скольких отправлений файл этикеток скачивается
+// и сохраняется у нас (ссылка или путь, как у остальных документов).
+// Больше — отдаём ссылку Ozon как есть: тащить сотни этикеток через
+// наш процесс ради другой ссылки на тот же файл незачем.
+const maxDownloadLabels = 20
 
 // maxLabelPostings — потолок одного вызова ozon_fbs_labels. Не лимит
 // Ozon, а здравый смысл: пачка в тысячу этикеток — это уже выгрузка,
@@ -291,12 +296,15 @@ const maxLabelPostings = 500
 // labelTaskWait — сколько ждать асинхронные этикетки внутри вызова.
 const labelTaskWait = 90 * time.Second
 
+// labelPollEvery — пауза между опросами задания; в тестах короче.
+var labelPollEvery = 2 * time.Second
+
 func (r *Registry) registerFBSDocuments() {
 	r.Add(Spec{
 		Name: "ozon_fbs_labels",
 		Desc: "Этикетки (маркировка) для собранных отправлений FBS — PDF для печати. " +
 			"Сервер сохраняет файл и возвращает ссылку или путь, а не содержимое. " +
-			"До 20 отправлений — один файл сразу; больше — задание Ozon, файл по ссылке Ozon. " +
+			"Этикетки формирует задание Ozon (обычно несколько секунд): до 20 отправлений файл сохраняется здесь, больше — ссылка на файл Ozon. " +
 			"Этикетка появляется через 45–60 секунд после сборки: «not ready» сразу после ozon_fbs_ship — норма, повторите.",
 		Schema: schema(obj{
 			"posting_numbers": arr(obj{"type": "string"}, "Номера собранных отправлений (статус awaiting_deliver)"),
@@ -313,15 +321,7 @@ func (r *Registry) registerFBSDocuments() {
 			return nums, nil
 		},
 		Do: func(ctx context.Context, c *ozon.Client, payload any) (any, error) {
-			nums := payload.([]string)
-			if len(nums) <= maxSyncLabels {
-				f, err := c.CallFile(ctx, ozon.PathPostingFBSLabel, obj{"posting_number": nums})
-				if err != nil {
-					return nil, err
-				}
-				return r.saveFile(f, labelsName(nums), fmt.Sprintf("Этикетки: %d отправлений", len(nums)))
-			}
-			return labelsViaTask(ctx, c, nums)
+			return r.labels(ctx, c, payload.([]string))
 		},
 		Hint: labelsNotReadyHint,
 	})
@@ -458,81 +458,230 @@ func (r *Registry) saveFile(f ozon.File, fallbackName, what string) (string, err
 	return b.String(), nil
 }
 
-// labelsViaTask заказывает этикетки заданием и ждёт готовый файл.
-//
-// Файл в этом случае не скачивается: Ozon отдаёт ссылку на свой
-// сервер, и она доступна человеку напрямую. Тащить сотни этикеток
-// через наш процесс ради того, чтобы выдать другую ссылку на тот же
-// файл, незачем.
-func labelsViaTask(ctx context.Context, c *ozon.Client, nums []string) (string, error) {
-	var created struct {
-		Result struct {
-			Tasks []struct {
-				TaskID   int64  `json:"task_id"`
-				TaskType string `json:"task_type"`
-			} `json:"tasks"`
-			TaskID int64 `json:"task_id"`
-		} `json:"result"`
+// labelTask — задание Ozon на этикетки одного размера.
+type labelTask struct {
+	ID   int64  `json:"task_id"`
+	Type string `json:"task_type"`
+}
+
+// labelResult — ответ /v2/posting/fbs/package-label/get.
+type labelResult struct {
+	FileURL string `json:"file_url"`
+	Status  struct {
+		Code              string `json:"code"`
+		PostingsCount     int    `json:"postings_count"`
+		PrintedCount      int    `json:"printed_postings_count"`
+		UnprintedPostings []struct {
+			PostingNumber string `json:"posting_number"`
+			Message       string `json:"message"`
+		} `json:"unprinted_postings"`
+	} `json:"status"`
+	Error struct {
+		Code    string `json:"code"`
+		Message string `json:"message"`
+	} `json:"error"`
+}
+
+// unwrapResult снимает обёртку {"result": …}, если она есть. Новые
+// методы этикеток отвечают без неё, но шлюз Ozon уже не раз менял
+// форму ответа без объявления.
+func unwrapResult(raw json.RawMessage) json.RawMessage {
+	var env struct {
+		Result json.RawMessage `json:"result"`
 	}
-	if err := c.CallInto(ctx, ozon.PathPostingFBSLabelCreate, obj{"posting_number": nums}, &created); err != nil {
+	if json.Unmarshal(raw, &env) == nil && len(env.Result) > 0 && env.Result[0] == '{' {
+		return env.Result
+	}
+	return raw
+}
+
+// labels заказывает этикетки заданием (/v3/posting/fbs/package-label/create)
+// и ждёт файл (/v2/posting/fbs/package-label/get).
+//
+// Синхронный /v2/posting/fbs/package-label и задания v1/v2 Ozon
+// отключает 2 ноября 2026 года; с 5 октября 2026 они уже выдают этикетки
+// нового формата и на части отправлений отвечают 400 без пояснения.
+// Новый create отдаёт два задания — обычную (big_label) и маленькую
+// (small_label) этикетку; основной файл — обычная.
+func (r *Registry) labels(ctx context.Context, c *ozon.Client, nums []string) (string, error) {
+	var raw json.RawMessage
+	if err := c.CallInto(ctx, ozon.PathPostingFBSLabelCreate, obj{"posting_numbers": nums}, &raw); err != nil {
 		return "", err
 	}
-
-	type task struct {
-		id  int64
-		typ string
+	var created struct {
+		Tasks  []labelTask `json:"tasks"`
+		TaskID int64       `json:"task_id"`
 	}
-	var tasks []task
-	for _, t := range created.Result.Tasks {
-		tasks = append(tasks, task{t.TaskID, t.TaskType})
+	if err := json.Unmarshal(unwrapResult(raw), &created); err != nil {
+		return "", fmt.Errorf("задание этикеток: ответ Ozon не разобран: %w", err)
 	}
-	if len(tasks) == 0 && created.Result.TaskID != 0 {
-		tasks = append(tasks, task{created.Result.TaskID, "big_label"})
+	tasks := created.Tasks
+	if len(tasks) == 0 && created.TaskID != 0 {
+		tasks = []labelTask{{ID: created.TaskID, Type: "big_label"}}
 	}
 	if len(tasks) == 0 {
 		return "", fmt.Errorf("Ozon принял задание на этикетки, но не вернул его идентификатор")
 	}
+	// Обычная этикетка — первой: по первой ссылке ответа клиенты
+	// скачивают основной файл.
+	slices.SortStableFunc(tasks, func(a, b labelTask) int {
+		return labelTypeRank(a.Type) - labelTypeRank(b.Type)
+	})
 
 	deadline := time.Now().Add(labelTaskWait)
-	var b strings.Builder
-	fmt.Fprintf(&b, "Этикетки для %d отправлений (через задание Ozon):\n", len(nums))
-
-	for _, t := range tasks {
-		label := labelTypeName(t.typ)
-		for {
-			var got struct {
-				Result struct {
-					Status  string `json:"status"`
-					FileURL string `json:"file_url"`
-					Error   string `json:"error"`
-				} `json:"result"`
+	var (
+		lines     []string
+		saved     string
+		unprinted = map[string]string{}
+		ready     int
+	)
+	for i, t := range tasks {
+		name := labelTypeName(t.Type)
+		res, err := waitLabelTask(ctx, c, t.ID, deadline)
+		if err != nil {
+			return "", err
+		}
+		for _, u := range res.Status.UnprintedPostings {
+			unprinted[u.PostingNumber] = u.Message
+		}
+		switch {
+		case res.Status.Code == "completed" && res.FileURL != "":
+			ready++
+			if i == 0 && len(nums) <= maxDownloadLabels && r.files != nil {
+				out, err := r.saveLabelFile(ctx, c, res.FileURL, nums)
+				if err == nil {
+					saved = out
+					continue
+				}
+				lines = append(lines, fmt.Sprintf("  %s: %s (скачать не вышло: %v)", name, res.FileURL, err))
+				continue
 			}
-			if err := c.CallInto(ctx, ozon.PathPostingFBSLabelGet, obj{"task_id": t.id}, &got); err != nil {
-				return "", err
-			}
-			res := got.Result
-			if res.Status == "completed" && res.FileURL != "" {
-				fmt.Fprintf(&b, "  %s: %s\n", label, res.FileURL)
-				break
-			}
-			if res.Status == "error" {
-				fmt.Fprintf(&b, "  %s: ошибка формирования — %s\n", label, res.Error)
-				break
-			}
-			if time.Now().After(deadline) {
-				fmt.Fprintf(&b, "  %s: ещё формируется (задание %d, статус %s). "+
-					"Повторите вызов через минуту — Ozon отдаст уже готовый файл.\n", label, t.id, res.Status)
-				break
-			}
-			select {
-			case <-ctx.Done():
-				return "", ctx.Err()
-			case <-time.After(3 * time.Second):
-			}
+			lines = append(lines, fmt.Sprintf("  %s: %s", name, res.FileURL))
+		case res.Status.Code == "error" || res.Error.Message != "" || res.Error.Code != "":
+			lines = append(lines, fmt.Sprintf("  %s: ошибка формирования — %s", name,
+				firstNonEmpty(res.Error.Message, res.Error.Code, "Ozon не пояснил причину")))
+		default:
+			lines = append(lines, fmt.Sprintf("  %s: ещё формируется (задание %d, статус %s). "+
+				"Повторите вызов через минуту — Ozon отдаст уже готовый файл.", name, t.ID, firstNonEmpty(res.Status.Code, "pending")))
 		}
 	}
-	b.WriteString("Ссылки ведут на сервер Ozon — покажите их человеку как есть, чтобы он открыл и распечатал.")
+
+	if ready == 0 && len(unprinted) > 0 {
+		return "", fmt.Errorf("Ozon не сформировал этикетки:\n%s\n\n%s", unprintedList(unprinted), labelsStatusAdvice)
+	}
+
+	var b strings.Builder
+	if saved != "" {
+		b.WriteString(saved)
+	} else {
+		fmt.Fprintf(&b, "Этикетки для %d отправлений (задание Ozon):\n", len(nums))
+	}
+	if len(lines) > 0 {
+		if saved != "" {
+			b.WriteString("Ещё:\n")
+		}
+		b.WriteString(strings.Join(lines, "\n"))
+		b.WriteString("\n")
+	}
+	if len(unprinted) > 0 {
+		fmt.Fprintf(&b, "Не вошли в файл (%d):\n%s\n%s\n", len(unprinted), unprintedList(unprinted), labelsStatusAdvice)
+	}
+	if saved == "" {
+		b.WriteString("Ссылки ведут на сервер Ozon — покажите их человеку как есть, чтобы он открыл и распечатал.")
+	}
 	return b.String(), nil
+}
+
+// waitLabelTask опрашивает задание, пока оно не завершится или не выйдет
+// общее на вызов время.
+func waitLabelTask(ctx context.Context, c *ozon.Client, id int64, deadline time.Time) (labelResult, error) {
+	for {
+		var raw json.RawMessage
+		if err := c.CallInto(ctx, ozon.PathPostingFBSLabelGet, obj{"task_id": id}, &raw); err != nil {
+			return labelResult{}, err
+		}
+		var res labelResult
+		if err := json.Unmarshal(unwrapResult(raw), &res); err != nil {
+			return labelResult{}, fmt.Errorf("задание этикеток %d: ответ Ozon не разобран: %w", id, err)
+		}
+		switch res.Status.Code {
+		case "completed", "error":
+			return res, nil
+		}
+		if res.Error.Message != "" || res.Error.Code != "" || time.Now().After(deadline) {
+			return res, nil
+		}
+		select {
+		case <-ctx.Done():
+			return labelResult{}, ctx.Err()
+		case <-time.After(labelPollEvery):
+		}
+	}
+}
+
+// saveLabelFile скачивает готовый файл Ozon и сохраняет его у нас.
+func (r *Registry) saveLabelFile(ctx context.Context, c *ozon.Client, url string, nums []string) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return "", err
+	}
+	resp, err := c.HTTPClient().Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 64<<20))
+	if err != nil {
+		return "", err
+	}
+	ct := "application/pdf"
+	if !bytes.HasPrefix(data, []byte("%PDF")) {
+		ct = http.DetectContentType(data)
+	}
+	return r.saveFile(ozon.File{ContentType: ct, Data: data}, labelsName(nums),
+		fmt.Sprintf("Этикетки: %d отправлений", len(nums)))
+}
+
+const labelsStatusAdvice = "Этикетки печатаются только для собранных отправлений (awaiting_deliver), " +
+	"и не раньше чем через 45–60 секунд после сборки. Проверьте статус в ozon_posting_get; " +
+	"после деления на коробки этикетки нужны на новые номера из ozon_fbs_ship."
+
+func unprintedList(m map[string]string) string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	slices.Sort(keys)
+	var b strings.Builder
+	for i, k := range keys {
+		if i > 0 {
+			b.WriteString("\n")
+		}
+		fmt.Fprintf(&b, "  %s: %s", k, firstNonEmpty(m[k], "без пояснения"))
+	}
+	return b.String()
+}
+
+func firstNonEmpty(v ...string) string {
+	for _, s := range v {
+		if strings.TrimSpace(s) != "" {
+			return s
+		}
+	}
+	return ""
+}
+
+func labelTypeRank(t string) int {
+	switch t {
+	case "big_label", "":
+		return 0
+	case "small_label":
+		return 1
+	}
+	return 2
 }
 
 func labelTypeName(t string) string {
@@ -568,13 +717,18 @@ func labelsNotReadyHint(_ map[string]any, err error) string {
 	}
 	msg := strings.ToLower(apiErr.Message + " " + apiErr.Code + " " + apiErr.Raw)
 	switch {
-	case strings.Contains(msg, "not ready") || strings.Contains(msg, "not_ready"):
+	case strings.Contains(msg, "not ready") || strings.Contains(msg, "not_ready") || strings.Contains(msg, "aren't ready"):
 		return "Этикетка ещё не сформирована: Ozon готовит её 45–60 секунд после сборки.\n" +
 			"Ничего менять не нужно — повторите тот же вызов через минуту."
-	case strings.Contains(msg, "status") || strings.Contains(msg, "packag"):
+	case apiErr.StatusCode == http.StatusBadRequest || apiErr.StatusCode == http.StatusNotFound ||
+		strings.Contains(msg, "status") || strings.Contains(msg, "packag"):
+		// Общая подсказка 400 про характеристики категории к этикеткам
+		// не относится и уводит не туда — заменяем её своей.
 		return "Этикетки печатаются только для собранных отправлений (статус awaiting_deliver).\n" +
 			"Проверьте статус в ozon_posting_get; несобранное сначала соберите ozon_fbs_ship.\n" +
-			"Если в пачке хоть одно отправление не готово, Ozon не отдаёт этикетки ни на одно из них."
+			"После деления на коробки этикетки нужны на новые номера. Сразу после сборки этикетка " +
+			"ещё не готова — повторите через минуту.\n" +
+			"Если в пачке хоть одно отправление не готово, Ozon может не отдать этикетки ни на одно."
 	}
 	return ""
 }
