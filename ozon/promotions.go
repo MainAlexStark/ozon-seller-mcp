@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"strconv"
@@ -157,6 +158,11 @@ func (c *Client) ActionProductsFor(ctx context.Context, path string, actionID in
 		}
 		raw, err := c.Call(ctx, path, req)
 		if err != nil {
+			// v2 отвечает 404 «Resource not found», когда товаров дальше
+			// (или вовсе) нет — это конец списка, а не сбой.
+			if isNotFound(err) {
+				return found, nil
+			}
 			return found, err
 		}
 
@@ -213,4 +219,11 @@ func (c StrategyCompetitor) Validate() error {
 			c.Coefficient, MinCompetitorCoefficient, MaxCompetitorCoefficient)
 	}
 	return nil
+}
+
+// isNotFound — 404 «Resource not found» от Ozon.
+func isNotFound(err error) bool {
+	var api *APIError
+	return errors.As(err, &api) && api.StatusCode == 404 &&
+		strings.Contains(strings.ToLower(api.Message), "not found")
 }

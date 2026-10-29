@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -87,5 +88,47 @@ func TestLeaveActionPromocodesFallsBackToV2(t *testing.T) {
 	}
 	if ids, _ := deactivate["product_ids"].([]any); len(ids) != 1 || ids[0] != "9" {
 		t.Errorf("v2 ждёт product_ids строками: %v", deactivate["product_ids"])
+	}
+}
+
+func TestLeaveActionUsesLimitHintWhen404(t *testing.T) {
+	var update map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body := map[string]any{}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		switch r.URL.Path {
+		case PathActionProducts:
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"code":5,"message":"Resource not found"}`))
+		case PathActionUpdate:
+			update = body
+			_, _ = w.Write([]byte(`{"active_product_ids":[],"deactivated_product_ids":["5"]}`))
+		default:
+			t.Errorf("неожиданный вызов %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	c := New("id", "key", WithBaseURL(srv.URL), WithMaxRetries(0))
+	res, err := LeaveActionWithLimits(context.Background(), c, 1, []int64{5}, map[int64]float64{5: 362})
+	if err != nil || len(res.Left) != 1 || update == nil {
+		t.Fatalf("лимит из подсказки должен вывести товар: %+v %v", res, err)
+	}
+}
+
+func TestLeaveActionExplainsFailure(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"code":5,"message":"Resource not found"}`))
+	}))
+	defer srv.Close()
+	c := New("id", "key", WithBaseURL(srv.URL), WithMaxRetries(0))
+	res, err := LeaveAction(context.Background(), c, 1, []int64{5})
+	if err != nil {
+		t.Fatalf("отказ — в Failed, не ошибкой вызова: %v", err)
+	}
+	why := res.Failed[5]
+	if strings.Contains(why, "Метод не найден") || !strings.Contains(why, "Resource not found") {
+		t.Errorf("причина: %q", why)
 	}
 }

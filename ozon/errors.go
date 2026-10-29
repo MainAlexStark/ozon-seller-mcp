@@ -60,6 +60,13 @@ func (e *APIError) Hint() string {
 		return "Ключ не принят. Проверьте Client-Id и API-ключ магазина (в кабинете сервиса либо OZON_CLIENT_ID и OZON_API_KEY при локальном запуске). " +
 			"Учтите: с сентября 2026 новые ключи в кабинете выпускаются на 3 месяца — возможно, срок истёк."
 	case http.StatusNotFound:
+		// «Resource not found» Ozon отдаёт и на живой метод, когда не
+		// находит сам объект (акцию, отправление) — путать это с
+		// отключённой версией нельзя.
+		if strings.Contains(strings.ToLower(e.Message), "resource not found") {
+			return "Ozon не нашёл объект запроса (например, акцию или товар в ней) — сам метод работает. " +
+				"Проверьте идентификаторы; акция могла закончиться."
+		}
 		return "Метод не найден. Вероятно, Ozon отключил эту версию — сверьтесь с docs.ozon.ru/api/seller " +
 			"и запустите ozon_api_selftest, чтобы увидеть все затронутые методы разом."
 	case http.StatusTooManyRequests:

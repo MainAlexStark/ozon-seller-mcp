@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"sort"
@@ -173,6 +174,15 @@ func (r LeaveResult) JSON() string {
 // deactivate. Тип акции в ответах товаров не виден, поэтому сначала
 // пробуем цену выше лимита, а то, что Ozon так не вывел, — v2.
 func LeaveAction(ctx context.Context, c *Client, actionID int64, productIDs []int64) (LeaveResult, error) {
+	return LeaveActionWithLimits(ctx, c, actionID, productIDs, nil)
+}
+
+// LeaveActionWithLimits — LeaveAction с известными заранее лимитами
+// акции по товарам (product_id → max_action_price). Ozon отдаёт по
+// некоторым акциям 404 «Resource not found» на /v2/actions/products, и
+// без лимита вывести товар из бустинга нечем; лимит из прошлой сверки
+// клиента выручает. Лимит из ответа Ozon, если он есть, главнее.
+func LeaveActionWithLimits(ctx context.Context, c *Client, actionID int64, productIDs []int64, limits map[int64]float64) (LeaveResult, error) {
 	res := LeaveResult{ActionID: actionID, Failed: map[int64]string{}}
 	want := make(map[int64]bool, len(productIDs))
 	for _, id := range productIDs {
@@ -182,12 +192,17 @@ func LeaveAction(ctx context.Context, c *Client, actionID int64, productIDs []in
 
 	participants, perr := c.ActionProductsFor(ctx, PathActionProducts, actionID, want, 10)
 	var rows []map[string]any
+	noLimit := map[int64]bool{}
 	for _, id := range productIDs {
-		p, ok := participants[id]
-		if !ok || p.MaxActionPrice <= 0 {
+		limit := limits[id]
+		if p, ok := participants[id]; ok && p.MaxActionPrice > 0 {
+			limit = float64(p.MaxActionPrice)
+		}
+		if limit <= 0 {
+			noLimit[id] = true
 			continue
 		}
-		rows = append(rows, map[string]any{"product_id": id, "action_price": MoneyRUB(LeavePrice(float64(p.MaxActionPrice)))})
+		rows = append(rows, map[string]any{"product_id": id, "action_price": MoneyRUB(LeavePrice(limit))})
 	}
 	var updErr error
 	if len(rows) > 0 {
@@ -241,16 +256,24 @@ func LeaveAction(ctx context.Context, c *Client, actionID int64, productIDs []in
 			if _, has := res.Failed[id]; has {
 				continue
 			}
-			switch {
-			case err != nil:
-				res.Failed[id] = err.Error()
-			case updErr != nil:
-				res.Failed[id] = updErr.Error()
-			case perr != nil:
-				res.Failed[id] = "не удалось прочитать товары акции: " + perr.Error()
-			default:
-				res.Failed[id] = "Ozon не подтвердил вывод товара из акции"
+			var why []string
+			if updErr != nil {
+				why = append(why, "цена выше лимита: "+updErr.Error())
 			}
+			if noLimit[id] {
+				if perr != nil {
+					why = append(why, "лимит акции не прочитать: "+brief(perr))
+				} else {
+					why = append(why, "Ozon не отдал лимит акции для товара — вывести ценой выше лимита нечем")
+				}
+			}
+			if err != nil {
+				why = append(why, "v2 deactivate (только «Промокоды»): "+brief(err))
+			}
+			if len(why) == 0 {
+				why = append(why, "Ozon не подтвердил вывод товара из акции")
+			}
+			res.Failed[id] = strings.Join(why, "; ")
 		}
 	}
 
@@ -259,12 +282,15 @@ func LeaveAction(ctx context.Context, c *Client, actionID int64, productIDs []in
 			res.Left = append(res.Left, id)
 		}
 	}
-	if len(res.Left) == 0 && len(res.Failed) > 0 {
-		for _, e := range []error{updErr, perr} {
-			if e != nil {
-				return res, e
-			}
-		}
-	}
 	return res, nil
+}
+
+// brief — ошибка Ozon без подсказки клиента: подсказки к 404/400 общие
+// («метод не найден») и здесь только путают.
+func brief(err error) string {
+	var api *APIError
+	if errors.As(err, &api) {
+		return fmt.Sprintf("HTTP %d %s", api.StatusCode, strings.TrimSpace(api.Message))
+	}
+	return err.Error()
 }

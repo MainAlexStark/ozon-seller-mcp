@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/MainAlexStark/ozon-seller-mcp/internal/mcp"
@@ -78,11 +79,15 @@ func (r *Registry) RegisterPromotions() {
 		InputSchema: schema(obj{
 			"action_id":   num("Идентификатор акции"),
 			"product_ids": arr(obj{"type": "integer"}, "ID товаров, которые нужно вывести"),
+			"limits": obj{"type": "object", "additionalProperties": obj{"type": "number"},
+				"description": "Необязательно: лимит акции (max_action_price) по товарам, {\"product_id\": лимит} — " +
+					"на случай, если Ozon не отдаёт товары акции (404 на /v2/actions/products)"},
 		}, "action_id", "product_ids"),
 		Handler: func(ctx context.Context, raw json.RawMessage) (string, error) {
 			var a struct {
-				ActionID   int64   `json:"action_id"`
-				ProductIDs []int64 `json:"product_ids"`
+				ActionID   int64              `json:"action_id"`
+				ProductIDs []int64            `json:"product_ids"`
+				Limits     map[string]float64 `json:"limits"`
 			}
 			if err := json.Unmarshal(raw, &a); err != nil {
 				return "", fmt.Errorf("не разобрать аргументы: %w", err)
@@ -100,7 +105,13 @@ func (r *Registry) RegisterPromotions() {
 			if len(a.ProductIDs) == 0 {
 				return "", fmt.Errorf("пустой список товаров")
 			}
-			res, err := ozon.LeaveAction(ctx, r.clientFor(ctx), a.ActionID, a.ProductIDs)
+			limits := map[int64]float64{}
+			for k, v := range a.Limits {
+				if id, err := strconv.ParseInt(strings.TrimSpace(k), 10, 64); err == nil && v > 0 {
+					limits[id] = v
+				}
+			}
+			res, err := ozon.LeaveActionWithLimits(ctx, r.clientFor(ctx), a.ActionID, a.ProductIDs, limits)
 			if err != nil {
 				return "", decorate(err)
 			}
