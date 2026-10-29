@@ -135,6 +135,34 @@ func (r LeaveResult) Summary() string {
 	return b.String()
 }
 
+// JSON — итог в прежней форме ответа deactivate
+// ({"result":{"product_ids","rejected"}}), чтобы клиенты, разбиравшие
+// старый метод, работали без изменений.
+func (r LeaveResult) JSON() string {
+	type rej struct {
+		ProductID int64  `json:"product_id"`
+		Reason    string `json:"reason"`
+	}
+	var out struct {
+		Result struct {
+			ProductIDs []int64 `json:"product_ids"`
+			Rejected   []rej   `json:"rejected"`
+		} `json:"result"`
+	}
+	out.Result.ProductIDs = append([]int64{}, r.Left...)
+	out.Result.Rejected = []rej{}
+	ids := make([]int64, 0, len(r.Failed))
+	for id := range r.Failed {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	for _, id := range ids {
+		out.Result.Rejected = append(out.Result.Rejected, rej{id, r.Failed[id]})
+	}
+	raw, _ := json.Marshal(out)
+	return string(raw)
+}
+
 // LeaveAction выводит товары из акции так, как это устроено после
 // перехода Ozon на единую предельную цену (19.10.2026).
 //

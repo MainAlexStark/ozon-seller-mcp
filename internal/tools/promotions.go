@@ -104,7 +104,7 @@ func (r *Registry) RegisterPromotions() {
 			if err != nil {
 				return "", decorate(err)
 			}
-			return res.Summary(), nil
+			return res.Summary() + "\n\n" + res.JSON(), nil
 		},
 	})
 
