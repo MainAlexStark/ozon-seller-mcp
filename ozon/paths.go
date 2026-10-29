@@ -58,11 +58,30 @@ const (
 	// PathActionsList — единственный метод сервера, отвечающий на GET.
 	// На POST он отдаёт 404, и это выглядит как отключённая версия,
 	// хотя дело в глаголе.
+	//
+	// С 19.10.2026 Ozon включил «единую предельную цену» и заблокировал
+	// /v1/actions/candidates, /v1/actions/products, /v1/actions/products/
+	// activate и /v1/actions/products/deactivate (HTTP 400 «the method is
+	// blocked due to unified price logic»). Новые методы отдают деньги
+	// объектом Money ({"amount":"88","currency":"RUB"}), без обёртки
+	// result и листают по last_id.
+	//
+	// PathActionUpdate добавляет товар в акцию или меняет его акционную
+	// цену. Он же — единственный способ вывести товар из «Эластичного»
+	// и «Максимального бустинга» и «Скидки на сток»: action_price выше
+	// лимита акции (max_action_price). PathActionDeactivate (v2) выводит
+	// только из «Промокодов».
 	PathActionsList      = "/v1/actions"
-	PathActionCandidates = "/v1/actions/candidates"
-	PathActionProducts   = "/v1/actions/products"
-	PathActionActivate   = "/v1/actions/products/activate"
-	PathActionDeactivate = "/v1/actions/products/deactivate"
+	PathActionCandidates = "/v2/actions/candidates"
+	PathActionProducts   = "/v2/actions/products"
+	PathActionUpdate     = "/v1/actions/products/update"
+	PathActionDeactivate = "/v2/actions/products/deactivate"
+
+	// PathActionActivate — прежнее имя добавления в акцию; теперь это
+	// тот же /v1/actions/products/update.
+	//
+	// Deprecated: используйте PathActionUpdate.
+	PathActionActivate = PathActionUpdate
 
 	// --- Автостратегии цен ---
 	//

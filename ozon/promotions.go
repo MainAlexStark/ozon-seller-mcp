@@ -1,9 +1,13 @@
 package ozon
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
+	"strconv"
+	"strings"
 )
 
 // Типы акций описаны здесь, а не в инструментах, по той же причине,
@@ -33,37 +37,103 @@ func (p ActionProduct) Validate() error {
 	return nil
 }
 
+// Money — денежная сумма из ответа Ozon. Новые методы акций отдают
+// её объектом {"amount":"88","currency":"RUB"}, старые — числом;
+// разбираются оба вида, чтобы смена версии не обнуляла цены молча.
+type Money float64
+
+// UnmarshalJSON принимает число, строку с числом и объект Money.
+func (m *Money) UnmarshalJSON(b []byte) error {
+	b = bytes.TrimSpace(b)
+	if len(b) == 0 || string(b) == "null" {
+		*m = 0
+		return nil
+	}
+	switch b[0] {
+	case '{':
+		var o struct {
+			Amount json.RawMessage `json:"amount"`
+		}
+		if err := json.Unmarshal(b, &o); err != nil {
+			return err
+		}
+		if len(o.Amount) == 0 {
+			*m = 0
+			return nil
+		}
+		return m.UnmarshalJSON(o.Amount)
+	case '"':
+		var str string
+		if err := json.Unmarshal(b, &str); err != nil {
+			return err
+		}
+		str = strings.ReplaceAll(strings.TrimSpace(str), ",", ".")
+		if str == "" {
+			*m = 0
+			return nil
+		}
+		f, err := strconv.ParseFloat(str, 64)
+		if err != nil {
+			return fmt.Errorf("сумма %q: %w", str, err)
+		}
+		*m = Money(f)
+		return nil
+	}
+	var f float64
+	if err := json.Unmarshal(b, &f); err != nil {
+		return err
+	}
+	*m = Money(f)
+	return nil
+}
+
+// MoneyRUB — сумма в виде, который принимают новые методы акций.
+func MoneyRUB(v float64) map[string]string {
+	return map[string]string{"amount": strconv.FormatFloat(math.Round(v*100)/100, 'f', -1, 64), "currency": "RUB"}
+}
+
 // ActionCandidate — товар в разрезе одной акции: и тот, что доступен
 // для участия, и тот, что уже участвует. Ozon отдаёт их одинаковой
 // структурой из двух разных методов.
 type ActionCandidate struct {
-	ID    int64   `json:"id"`
-	Price float64 `json:"price"`
+	ID    int64 `json:"id"`
+	Price Money `json:"price"`
 
 	// ActionPrice — цена по акции: у кандидата предложенная,
 	// у участника действующая.
-	ActionPrice float64 `json:"action_price"`
+	ActionPrice Money `json:"action_price"`
 
-	// MaxActionPrice — потолок, выше которого Ozon в эту акцию не
-	// пустит. Главное число во всей структуре: оно превращает вопрос
-	// «стоит ли участвовать» из догадки в арифметику.
-	MaxActionPrice float64 `json:"max_action_price"`
+	// MaxActionPrice — потолок (лимит акции), выше которого Ozon в эту
+	// акцию не пустит. Главное число во всей структуре: оно превращает
+	// вопрос «стоит ли участвовать» из догадки в арифметику. Цена выше
+	// лимита в /v1/actions/products/update выводит товар из бустингов.
+	MaxActionPrice Money `json:"max_action_price"`
 
 	AddMode  string  `json:"add_mode"`
 	MinStock float64 `json:"min_stock"`
 	Stock    float64 `json:"stock"`
 }
 
-// actionProductsPage — общий ответ списков товаров акции.
+// actionProductsPage — общий ответ списков товаров акции: v2 отдаёт
+// products на верхнем уровне, v1 — внутри result.
 type actionProductsPage struct {
-	Result struct {
+	Products []ActionCandidate `json:"products"`
+	LastID   string            `json:"last_id"`
+	Result   struct {
 		Products []ActionCandidate `json:"products"`
-		Total    float64           `json:"total"`
+		LastID   string            `json:"last_id"`
 	} `json:"result"`
 }
 
+func (p actionProductsPage) items() ([]ActionCandidate, string) {
+	if len(p.Products) > 0 || p.LastID != "" {
+		return p.Products, p.LastID
+	}
+	return p.Result.Products, p.Result.LastID
+}
+
 // ActionProductsPageSize — сколько товаров запрашивается за раз при
-// обходе списков акции.
+// обходе списков акции (у v2 это и есть максимум).
 const ActionProductsPageSize = 100
 
 // ActionProductsFor собирает товары акции по нужным идентификаторам.
@@ -79,12 +149,13 @@ const ActionProductsPageSize = 100
 func (c *Client) ActionProductsFor(ctx context.Context, path string, actionID int64, want map[int64]bool, maxPages int) (map[int64]ActionCandidate, error) {
 	found := make(map[int64]ActionCandidate, len(want))
 
+	lastID := ""
 	for page := 0; page < maxPages && len(found) < len(want); page++ {
-		raw, err := c.Call(ctx, path, map[string]any{
-			"action_id": actionID,
-			"limit":     ActionProductsPageSize,
-			"offset":    page * ActionProductsPageSize,
-		})
+		req := map[string]any{"action_id": actionID, "limit": ActionProductsPageSize}
+		if lastID != "" {
+			req["last_id"] = lastID
+		}
+		raw, err := c.Call(ctx, path, req)
 		if err != nil {
 			return found, err
 		}
@@ -93,17 +164,19 @@ func (c *Client) ActionProductsFor(ctx context.Context, path string, actionID in
 		if err := json.Unmarshal(raw, &resp); err != nil {
 			return found, fmt.Errorf("ozon: разбор ответа %s: %w", path, err)
 		}
+		products, next := resp.items()
 
-		for _, product := range resp.Result.Products {
+		for _, product := range products {
 			if want[product.ID] {
 				found[product.ID] = product
 			}
 		}
 
-		// Страница пришла неполной — дальше ничего нет.
-		if len(resp.Result.Products) < ActionProductsPageSize {
+		// Страница неполная или курсор не сдвинулся — дальше ничего нет.
+		if len(products) < ActionProductsPageSize || next == "" || next == lastID {
 			break
 		}
+		lastID = next
 	}
 	return found, nil
 }

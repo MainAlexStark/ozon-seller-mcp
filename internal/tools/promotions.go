@@ -43,10 +43,11 @@ func (r *Registry) RegisterPromotions() {
 			"ещё до того, как что-то менять.",
 		Schema: schema(obj{
 			"action_id": num("Идентификатор акции из ozon_actions_list"),
-			"limit":     obj{"type": "integer", "default": ozon.ActionProductsPageSize, "maximum": 1000},
-			"offset":    num("Смещение для постраничного обхода"),
+			"limit":     obj{"type": "integer", "default": ozon.ActionProductsPageSize, "maximum": 100},
+			"last_id":   obj{"type": "string", "description": "last_id из прошлого ответа — следующая страница"},
 		}, "action_id"),
 		Build: func(a map[string]any) (any, error) {
+			delete(a, "offset") // v2 листает только по last_id
 			return withLimit(a, ozon.ActionProductsPageSize), nil
 		},
 	})
@@ -58,38 +59,52 @@ func (r *Registry) RegisterPromotions() {
 			"Нужен, чтобы понять, что происходит с маржой прямо сейчас, и найти товары, которые пора вывести.",
 		Schema: schema(obj{
 			"action_id": num("Идентификатор акции из ozon_actions_list"),
-			"limit":     obj{"type": "integer", "default": ozon.ActionProductsPageSize, "maximum": 1000},
-			"offset":    num("Смещение для постраничного обхода"),
+			"limit":     obj{"type": "integer", "default": ozon.ActionProductsPageSize, "maximum": 100},
+			"last_id":   obj{"type": "string", "description": "last_id из прошлого ответа — следующая страница"},
 		}, "action_id"),
 		Build: func(a map[string]any) (any, error) {
+			delete(a, "offset") // v2 листает только по last_id
 			return withLimit(a, ozon.ActionProductsPageSize), nil
 		},
 	})
 
-	r.Add(Spec{
+	r.AddCustom(mcp.Tool{
 		Name: "ozon_action_products_deactivate",
-		Path: ozon.PathActionDeactivate,
-		Desc: "Вывести товары из акции. ИЗМЕНЯЕТ ДАННЫЕ: цена вернётся к обычной, товар потеряет место в подборке акции. " +
+		Description: "Вывести товары из акции. ИЗМЕНЯЕТ ДАННЫЕ: цена вернётся к обычной, товар потеряет место в подборке акции. " +
+			"С 19.10.2026 у Ozon нет единого метода вывода: из «Эластичного» и «Максимального бустинга» и «Скидки на сток» " +
+			"товар выводится акционной ценой выше лимита акции (/v1/actions/products/update), из «Промокодов» — " +
+			"/v2/actions/products/deactivate. Инструмент делает это сам: сначала цена выше лимита, остальное — v2. " +
 			"Обратная операция — ozon_action_products_activate.",
-		Write: true,
-		Schema: schema(obj{
+		InputSchema: schema(obj{
 			"action_id":   num("Идентификатор акции"),
 			"product_ids": arr(obj{"type": "integer"}, "ID товаров, которые нужно вывести"),
 		}, "action_id", "product_ids"),
-		Batch: func(a map[string]any) int {
-			ids, _ := a["product_ids"].([]any)
-			return len(ids)
-		},
-		Build: func(a map[string]any) (any, error) {
-			id, ok := toInt(a["action_id"])
-			if !ok {
-				return nil, fmt.Errorf("нужен action_id — его показывает ozon_actions_list")
+		Handler: func(ctx context.Context, raw json.RawMessage) (string, error) {
+			var a struct {
+				ActionID   int64   `json:"action_id"`
+				ProductIDs []int64 `json:"product_ids"`
 			}
-			ids, err := intList(a["product_ids"])
+			if err := json.Unmarshal(raw, &a); err != nil {
+				return "", fmt.Errorf("не разобрать аргументы: %w", err)
+			}
+			safety := r.safetyFor(ctx)
+			if err := safety.CheckWrite("ozon_action_products_deactivate"); err != nil {
+				return "", err
+			}
+			if err := safety.CheckBatchSize(len(a.ProductIDs)); err != nil {
+				return "", err
+			}
+			if a.ActionID <= 0 {
+				return "", fmt.Errorf("нужен action_id — его показывает ozon_actions_list")
+			}
+			if len(a.ProductIDs) == 0 {
+				return "", fmt.Errorf("пустой список товаров")
+			}
+			res, err := ozon.LeaveAction(ctx, r.clientFor(ctx), a.ActionID, a.ProductIDs)
 			if err != nil {
-				return nil, fmt.Errorf("product_ids: %w", err)
+				return "", decorate(err)
 			}
-			return obj{"action_id": id, "product_ids": ids}, nil
+			return res.Summary(), nil
 		},
 	})
 
@@ -154,9 +169,9 @@ func (r *Registry) RegisterPromotions() {
 				return "", err
 			}
 
-			resp, err := r.clientFor(ctx).Call(ctx, ozon.PathActionActivate, obj{
+			resp, err := r.clientFor(ctx).Call(ctx, ozon.PathActionUpdate, obj{
 				"action_id": a.ActionID,
-				"products":  a.Products,
+				"products":  ozon.ActionUpdateRows(a.Products),
 			})
 			if err != nil {
 				return "", decorate(err)
@@ -239,7 +254,7 @@ func checkActionCeiling(products []ozon.ActionProduct, known map[int64]ozon.Acti
 		if !ok || candidate.MaxActionPrice <= 0 {
 			continue
 		}
-		if p.ActionPrice > candidate.MaxActionPrice {
+		if p.ActionPrice > float64(candidate.MaxActionPrice) {
 			over = append(over, fmt.Sprintf("  товар %-12d %.2f > потолка %.2f",
 				p.ProductID, p.ActionPrice, candidate.MaxActionPrice))
 		}
@@ -267,7 +282,7 @@ func actionPriceChanges(products []ozon.ActionProduct, known map[int64]ozon.Acti
 		}
 		changes = append(changes, PriceChange{
 			Item: fmt.Sprintf("товар %d", p.ProductID),
-			Old:  candidate.Price,
+			Old:  float64(candidate.Price),
 			New:  p.ActionPrice,
 		})
 	}
@@ -280,27 +295,22 @@ func actionPriceChanges(products []ozon.ActionProduct, known map[int64]ozon.Acti
 // с причинами — и теряются при беглом чтении ответа ровно так же,
 // как ошибки валидации импорта.
 func summarizeActivation(raw json.RawMessage) string {
-	var resp struct {
-		Result struct {
-			ProductIDs []int64 `json:"product_ids"`
-			Rejected   []struct {
-				ProductID int64  `json:"product_id"`
-				Reason    string `json:"reason"`
-			} `json:"rejected"`
-		} `json:"result"`
-	}
-	if err := json.Unmarshal(raw, &resp); err != nil {
-		return ""
-	}
-	if len(resp.Result.Rejected) == 0 {
+	res := ozon.ParseActionUpdate(raw)
+	if len(res.Rejected) == 0 && len(res.Deactivated) == 0 {
 		return ""
 	}
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "ВНИМАНИЕ: Ozon принял %d товаров, отклонил %d:\n",
-		len(resp.Result.ProductIDs), len(resp.Result.Rejected))
-	for _, item := range resp.Result.Rejected {
-		fmt.Fprintf(&b, "  %-12d %s\n", item.ProductID, item.Reason)
+	fmt.Fprintf(&b, "ВНИМАНИЕ: Ozon принял %d товаров, отклонил %d", len(res.Active), len(res.Rejected))
+	if len(res.Deactivated) > 0 {
+		fmt.Fprintf(&b, ", вывел из акции %d", len(res.Deactivated))
+	}
+	b.WriteString(":\n")
+	for id, reason := range res.Rejected {
+		fmt.Fprintf(&b, "  %-12d %s\n", id, reason)
+	}
+	for id, reason := range res.Warnings {
+		fmt.Fprintf(&b, "  %-12d выведен: %s\n", id, reason)
 	}
 	return strings.TrimRight(b.String(), "\n")
 }

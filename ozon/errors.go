@@ -69,6 +69,10 @@ func (e *APIError) Hint() string {
 		// либо неверно собрано тело запроса, либо не заполнено то, что
 		// требует категория. Ozon сам говорит, какой это случай, —
 		// подсказку выбираем по его формулировке, а не гадаем.
+		if isMethodRetired(e.Message) {
+			return "Ozon заблокировал этот метод и просит перейти на новый — дело не в данных товара. " +
+				"Обновите ozon-seller-mcp (или интеграцию) до версии с новыми методами; список — в docs.ozon.ru/api/seller."
+		}
 		if isRequestValidation(e.Message) {
 			return "Ozon отверг форму запроса: не хватает обязательного поля или оно не того типа. " +
 				"Точное имя поля названо в сообщении выше — обычно это filter, который у большинства " +
@@ -81,6 +85,15 @@ func (e *APIError) Hint() string {
 		return "Ошибка на стороне Ozon. Клиент повторил запрос несколько раз — стоит попробовать позже."
 	}
 	return ""
+}
+
+// isMethodRetired узнаёт 400 «метод заблокирован, переходите на новые»:
+// так Ozon отключает версии, не отдавая 404.
+func isMethodRetired(msg string) bool {
+	m := strings.ToLower(msg)
+	return strings.Contains(m, "method is blocked") ||
+		strings.Contains(m, "switch to the new method") ||
+		strings.Contains(m, "deprecated")
 }
 
 // isSubscriptionDenied узнаёт отказ по тарифу, а не по ключу.
