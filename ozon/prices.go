@@ -23,8 +23,15 @@ type PriceUpdate struct {
 	// MinPrice — минимальная цена для автостратегий.
 	MinPrice string `json:"min_price,omitempty"`
 
+	// MinPriceForAutoActions — чтобы Ozon учитывал MinPrice при
+	// автодобавлении товара в акции. nil — не менять.
+	MinPriceForAutoActions *bool `json:"min_price_for_auto_actions_enabled,omitempty"`
+
 	CurrencyCode      string `json:"currency_code,omitempty"`
 	AutoActionEnabled string `json:"auto_action_enabled,omitempty"` // ENABLED | DISABLED | UNKNOWN
+	// AutoAddEnabled — автодобавление товара в акции Ozon:
+	// ENABLED | DISABLED | UNKNOWN (пусто — не менять).
+	AutoAddEnabled string `json:"auto_add_to_ozon_actions_list_enabled,omitempty"`
 }
 
 // Validate проверяет запись до отправки.
@@ -34,6 +41,13 @@ func (p PriceUpdate) Validate() error {
 	}
 	if p.Price == "" {
 		return fmt.Errorf("ozon: не задана цена для %s", p.key())
+	}
+	for name, v := range map[string]string{"auto_action_enabled": p.AutoActionEnabled, "auto_add_to_ozon_actions_list_enabled": p.AutoAddEnabled} {
+		switch v {
+		case "", "ENABLED", "DISABLED", "UNKNOWN":
+		default:
+			return fmt.Errorf("ozon: %s=%q для %s — ждём ENABLED, DISABLED или UNKNOWN", name, v, p.key())
+		}
 	}
 	for name, v := range map[string]string{"price": p.Price, "old_price": p.OldPrice, "min_price": p.MinPrice} {
 		if v == "" {
