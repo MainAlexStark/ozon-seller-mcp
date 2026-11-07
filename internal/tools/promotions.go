@@ -123,7 +123,8 @@ func (r *Registry) RegisterPromotions() {
 
 	r.AddCustom(mcp.Tool{
 		Name: "ozon_action_products_activate",
-		Description: "Добавить товары в акцию по указанной цене. ИЗМЕНЯЕТ ЦЕНЫ В ЖИВОМ МАГАЗИНЕ. " +
+		Description: "Добавить товары в акцию по указанной цене. ИЗМЕНЯЕТ ЦЕНЫ В ЖИВОМ МАГАЗИНЕ: с единой предельной ценой Ozon " +
+			"(13–19.10.2026) цена в акции вне «Промокодов» становится ценой товара. " +
 			"Перед отправкой каждая акционная цена сверяется с текущей ценой товара и с потолком Ozon: " +
 			"цена выше потолка отклоняется сразу, а скидка глубже порога (по умолчанию 30 %) " +
 			"требует confirm_large_change.",
@@ -194,7 +195,7 @@ func (r *Registry) RegisterPromotions() {
 			}
 			// Ответ Ozon делится на принятые и отклонённые товары, и
 			// отклонённые легко пропустить: вызов при этом успешен.
-			if note := summarizeActivation(resp); note != "" {
+			if note := summarizeActivation(resp, a.Products); note != "" {
 				body = note + "\n\n" + body
 			}
 			return body, nil
@@ -262,12 +263,12 @@ func checkActionCeiling(products []ozon.ActionProduct, known map[int64]ozon.Acti
 	var over []string
 	for _, p := range products {
 		candidate, ok := known[p.ProductID]
-		if !ok || candidate.MaxActionPrice <= 0 {
+		if !ok || candidate.Limit() <= 0 {
 			continue
 		}
-		if p.ActionPrice > float64(candidate.MaxActionPrice) {
+		if p.ActionPrice > candidate.Limit()+0.005 {
 			over = append(over, fmt.Sprintf("  товар %-12d %.2f > потолка %.2f",
-				p.ProductID, p.ActionPrice, candidate.MaxActionPrice))
+				p.ProductID, p.ActionPrice, candidate.Limit()))
 		}
 	}
 	if len(over) == 0 {
@@ -305,10 +306,26 @@ func actionPriceChanges(products []ozon.ActionProduct, known map[int64]ozon.Acti
 // Вызов при этом успешен, а отклонённые лежат отдельным списком
 // с причинами — и теряются при беглом чтении ответа ровно так же,
 // как ошибки валидации импорта.
-func summarizeActivation(raw json.RawMessage) string {
+func summarizeActivation(raw json.RawMessage, products []ozon.ActionProduct) string {
 	res := ozon.ParseActionUpdate(raw)
 	if len(res.Rejected) == 0 && len(res.Deactivated) == 0 {
-		return ""
+		// Ozon не сказал ни «принят», ни «отклонён» — успехом это
+		// не считается: проверьте участников акции.
+		active := map[int64]bool{}
+		for _, id := range res.Active {
+			active[id] = true
+		}
+		var silent []string
+		for _, p := range products {
+			if !active[p.ProductID] {
+				silent = append(silent, strconv.FormatInt(p.ProductID, 10))
+			}
+		}
+		if len(silent) == 0 {
+			return ""
+		}
+		return "ВНИМАНИЕ: Ozon не подтвердил участие товаров " + strings.Join(silent, ", ") +
+			" — проверьте ozon_action_products, прежде чем считать их в акции."
 	}
 
 	var b strings.Builder

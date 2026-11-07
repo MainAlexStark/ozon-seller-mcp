@@ -113,6 +113,19 @@ type ActionCandidate struct {
 	AddMode  string  `json:"add_mode"`
 	MinStock float64 `json:"min_stock"`
 	Stock    float64 `json:"stock"`
+
+	// PriceMinElastic / PriceMaxElastic — «Эластичный бустинг»: цена,
+	// с которой начинается минимальный и максимальный буст.
+	PriceMinElastic Money `json:"price_min_elastic"`
+	PriceMaxElastic Money `json:"price_max_elastic"`
+}
+
+// Limit — лимит участия: max_action_price, а у «Эластичного бустинга»,
+// где его может не быть, — цена минимального буста; берётся наибольшая.
+// С единой предельной ценой Ozon (13–19.10.2026) товар в акции, пока его
+// цена не выше лимита.
+func (c ActionCandidate) Limit() float64 {
+	return math.Max(float64(c.MaxActionPrice), float64(c.PriceMinElastic))
 }
 
 // actionProductsPage — общий ответ списков товаров акции: v2 отдаёт

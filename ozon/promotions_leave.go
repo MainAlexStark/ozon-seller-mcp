@@ -65,9 +65,38 @@ type ActionUpdateResult struct {
 // ParseActionUpdate разбирает ответ /v1/actions/products/update (и, на
 // всякий случай, старый вид с обёрткой result и product_ids).
 func ParseActionUpdate(raw []byte) ActionUpdateResult {
+	// Причина у Ozon встречается в reason, message или code, товар — в
+	// product_id или id.
 	type reason struct {
-		ProductID flexID `json:"product_id"`
-		Reason    string `json:"reason"`
+		ProductID flexID          `json:"product_id"`
+		ID        flexID          `json:"id"`
+		Reason    string          `json:"reason"`
+		Message   string          `json:"message"`
+		Code      json.RawMessage `json:"code"`
+	}
+	text := func(r reason) string {
+		code := strings.Trim(strings.TrimSpace(string(r.Code)), `"`)
+		var parts []string
+		for _, p := range []string{r.Reason, r.Message, code} {
+			p = strings.TrimSpace(p)
+			if p == "" || p == "null" || p == "0" {
+				continue
+			}
+			dup := false
+			for _, q := range parts {
+				dup = dup || q == p
+			}
+			if !dup {
+				parts = append(parts, p)
+			}
+		}
+		return strings.Join(parts, ": ")
+	}
+	idOf := func(r reason) int64 {
+		if r.ProductID != 0 {
+			return int64(r.ProductID)
+		}
+		return int64(r.ID)
 	}
 	type body struct {
 		Active      []flexID `json:"active_product_ids"`
@@ -91,10 +120,14 @@ func ParseActionUpdate(raw []byte) ActionUpdateResult {
 	res.Active = flexIDs(append(b.Active, b.ProductIDs...))
 	res.Deactivated = flexIDs(b.Deactivated)
 	for _, r := range b.Rejected {
-		res.Rejected[int64(r.ProductID)] = r.Reason
+		t := text(r)
+		if t == "" {
+			t = "без объяснения"
+		}
+		res.Rejected[idOf(r)] = t
 	}
 	for _, r := range b.Warnings {
-		res.Warnings[int64(r.ProductID)] = r.Reason
+		res.Warnings[idOf(r)] = text(r)
 	}
 	return res
 }
@@ -195,8 +228,8 @@ func LeaveActionWithLimits(ctx context.Context, c *Client, actionID int64, produ
 	noLimit := map[int64]bool{}
 	for _, id := range productIDs {
 		limit := limits[id]
-		if p, ok := participants[id]; ok && p.MaxActionPrice > 0 {
-			limit = float64(p.MaxActionPrice)
+		if p, ok := participants[id]; ok && p.Limit() > 0 {
+			limit = p.Limit()
 		}
 		if limit <= 0 {
 			noLimit[id] = true
