@@ -132,3 +132,25 @@ func TestLeaveActionExplainsFailure(t *testing.T) {
 		t.Errorf("причина: %q", why)
 	}
 }
+
+func TestParseActionUpdateReasonVariants(t *testing.T) {
+	res := ParseActionUpdate([]byte(`{"active_product_ids":[],"deactivated_product_ids":["7"],
+		"rejected":[{"id":"5","message":"min price violated","code":"MIN_PRICE"}],
+		"warnings":[{"product_id":7,"message":"price above limit"}]}`))
+	if res.Rejected[5] != "min price violated: MIN_PRICE" {
+		t.Errorf("причина отказа: %q", res.Rejected[5])
+	}
+	if res.Warnings[7] != "price above limit" || len(res.Deactivated) != 1 || res.Deactivated[0] != 7 {
+		t.Errorf("предупреждение/вывод: %+v", res)
+	}
+}
+
+func TestActionCandidateLimitElastic(t *testing.T) {
+	var c ActionCandidate
+	if err := json.Unmarshal([]byte(`{"id":1,"price":{"amount":"1000","currency":"RUB"},"price_min_elastic":{"amount":"742","currency":"RUB"},"price_max_elastic":{"amount":"623","currency":"RUB"}}`), &c); err != nil {
+		t.Fatal(err)
+	}
+	if c.Limit() != 742 {
+		t.Errorf("лимит эластичного бустинга: %v", c.Limit())
+	}
+}
