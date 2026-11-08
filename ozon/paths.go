@@ -185,6 +185,10 @@ const (
 	PathFinanceAccrualByDay    = "/v1/finance/accrual/by-day"
 	PathFinanceAccrualPostings = "/v1/finance/accrual/postings"
 	PathFinanceAccrualTypes    = "/v1/finance/accrual/types"
+	// PathFinanceBalance — «Финансы → Баланс» в ЛК: баланс на начало и
+	// конец периода, начислено, выплаты, продажи/возвраты/услуги.
+	// Бета-метод; окно — не больше 30 дней.
+	PathFinanceBalance = "/v1/finance/balance"
 
 	// --- Отзывы и вопросы ---
 	//

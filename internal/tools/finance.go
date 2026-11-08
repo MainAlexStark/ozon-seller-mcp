@@ -200,6 +200,31 @@ func (r *Registry) RegisterFinance() {
 	})
 
 	r.Add(Spec{
+		Name: "ozon_finance_balance",
+		Path: ozon.PathFinanceBalance,
+		Desc: "Баланс продавца за период — раздел «Финансы → Баланс» в личном кабинете: " +
+			"баланс на начало и конец периода, сколько начислено, сколько выплачено на счёт, " +
+			"продажи и возвраты с комиссией, услуги Ozon по видам. " +
+			"Отвечает на «сколько денег у меня на балансе Ozon» и «сколько выплатили». " +
+			"Период — не больше 30 дней; длиннее — разбейте на части.",
+		Schema: schema(obj{
+			"date_from": str("Начало периода, YYYY-MM-DD"),
+			"date_to":   str("Конец периода включительно, YYYY-MM-DD; не дальше 30 дней от начала"),
+		}, "date_from", "date_to"),
+		Build: func(a map[string]any) (any, error) {
+			from, to, err := summaryPeriod(a)
+			if err != nil {
+				return nil, err
+			}
+			if days := int(to.Sub(from).Hours() / 24); days > maxBalanceDays {
+				return nil, fmt.Errorf("период баланса — не больше %d дней между date_from и date_to, а тут %d: разбейте на части",
+					maxBalanceDays, days)
+			}
+			return map[string]any{"date_from": from.Format(dayLayout), "date_to": to.Format(dayLayout)}, nil
+		},
+	})
+
+	r.Add(Spec{
 		Name:   "ozon_finance_accrual_types",
 		Path:   ozon.PathFinanceAccrualTypes,
 		Desc:   "Справочник видов начислений — расшифровка кодов type_id из финансовых сводов и отчётов.",
@@ -208,6 +233,10 @@ func (r *Registry) RegisterFinance() {
 }
 
 const dayLayout = "2006-01-02"
+
+// maxBalanceDays — окно /v1/finance/balance: Ozon принимает не больше
+// 30 дней между date_from и date_to.
+const maxBalanceDays = 30
 
 // maxPostingsPerAccrualRequest — граница, которую Ozon проверяет сам,
 // но объясняет плохо.

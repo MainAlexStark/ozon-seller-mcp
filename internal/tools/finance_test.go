@@ -236,3 +236,33 @@ func TestSummaryWarnsAboutIncompleteDay(t *testing.T) {
 		t.Errorf("день с оборванным обходом должен быть назван:\n%s", got)
 	}
 }
+
+func TestFinanceBalance(t *testing.T) {
+	var got map[string]any
+	handler := func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/finance/balance" {
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		fmt.Fprint(w, `{"total":{"opening_balance":{"currency_code":"RUB","value":1000},"closing_balance":{"currency_code":"RUB","value":1500},"accrued":{"currency_code":"RUB","value":2500},"payments":[{"currency_code":"RUB","value":-2000}]}}`)
+	}
+	_, server, closeFn := fakeOzon(t, ModeReadOnly, http.HandlerFunc(handler))
+	defer closeFn()
+
+	body, isErr := callTool(t, server, "ozon_finance_balance", map[string]any{"date_from": "2026-10-01", "date_to": "2026-10-31"})
+	if isErr {
+		t.Fatalf("баланс не должен падать: %s", body)
+	}
+	if got["date_from"] != "2026-10-01" || got["date_to"] != "2026-10-31" {
+		t.Errorf("тело запроса: %v", got)
+	}
+	if !strings.Contains(body, "closing_balance") || !strings.Contains(body, "1500") {
+		t.Errorf("ответ Ozon не дошёл:\n%s", body)
+	}
+
+	body, isErr = callTool(t, server, "ozon_finance_balance", map[string]any{"date_from": "2026-09-01", "date_to": "2026-10-31"})
+	if !isErr || !strings.Contains(body, "30 дней") {
+		t.Errorf("длинный период должен отклоняться с объяснением: %v %s", isErr, body)
+	}
+}

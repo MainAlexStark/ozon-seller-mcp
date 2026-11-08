@@ -171,7 +171,7 @@ cd ozon-seller-mcp
 | Автостратегии цен | `pricing_strategies_list`, `pricing_strategy_info`, `pricing_strategy_products`, `pricing_strategy_product_info`, `pricing_competitors` |
 | Автостратегии цен (запись) | `pricing_strategy_create`, `pricing_strategy_products_add`, `pricing_strategy_products_delete`, `pricing_strategy_status` |
 | Аналитика | `analytics_data`, `analytics_stocks` |
-| Финансы | `finance_summary`, `finance_by_day`, `finance_postings`, `finance_accrual_types` |
+| Финансы | `finance_summary`, `finance_by_day`, `finance_postings`, `finance_balance`, `finance_accrual_types` |
 | Заказы FBS | `postings_list`, `posting_get`, `reviews_list` |
 | FBO: заказы и остатки | `fbo_postings_list`, `fbo_posting_get`, `fbo_stocks`, `fbo_clusters` |
 | FBO: поставки | `supply_orders_list`, `supply_order_get`, `supply_order_items`, `supply_orders_counters`, `supply_timeslots` |
